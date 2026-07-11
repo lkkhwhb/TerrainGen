@@ -11,10 +11,10 @@
 }
 </script>
 
-<title>Minecraft Terrain - LOD & Seamless Horizon</title>
+<title>Minecraft Terrain - Plains Variation & Dynamic Forests</title>
 
 <style>
-body{ margin:0; overflow:hidden; background:#cfe6ff; user-select: none; } 
+body{ margin:0; overflow:hidden; background:#8bb8e8; user-select: none; } 
 #fps{ position:absolute; top:10px; left:10px; color:#00ff00; font-family:monospace; font-size:18px; background:rgba(0,0,0,.6); padding:5px 10px; z-index:100; font-weight: bold; border-radius: 4px; }
 #coords{ position:absolute; top:46px; left:10px; color:#ffffff; font-family:monospace; font-size:16px; background:rgba(0,0,0,.6); padding:5px 10px; z-index:100; border-radius: 4px; }
 #mode{ position:absolute; top:82px; left:10px; color:#dddddd; font-family:monospace; font-size:14px; background:rgba(0,0,0,.6); padding:4px 10px; z-index:100; border-radius: 4px; }
@@ -52,251 +52,8 @@ import { PointerLockControls } from "three/addons/controls/PointerLockControls.j
 import { GUI } from "three/addons/libs/lil-gui.module.min.js";
 import { createNoise2D } from "https://cdn.jsdelivr.net/npm/simplex-noise@4.0.1/dist/esm/simplex-noise.js";
 
-const scene = new THREE.Scene();
-scene.fog = new THREE.Fog(0xcfe6ff, 30, 150);
-// Ensure background matches fog perfectly to prevent clipping lines
-scene.background = scene.fog.color; 
-
-const SEA_LEVEL = 20;
-
-const camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.1, 1000);
-camera.position.set(0, 100, 0); 
-
-const renderer = new THREE.WebGLRenderer({ antialias: true, desynchronized: true, powerPreference: "high-performance" });
-renderer.setSize(window.innerWidth,window.innerHeight);
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-renderer.shadowMap.enabled = true;
-renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 1.0;
-renderer.outputColorSpace = THREE.SRGBColorSpace;
-document.body.appendChild(renderer.domElement);
-
-const controls = new PointerLockControls(camera,document.body);
-const info = document.getElementById("info");
-info.onclick = () => controls.lock();
-controls.addEventListener("lock", () => info.style.display="none");
-controls.addEventListener("unlock", () => info.style.display="block");
-scene.add(controls.getObject());
-
-// --- LIGHTING ---
-const hemiLight = new THREE.HemisphereLight(0xe6f0fa, 0x888899, 0.85);
-scene.add(hemiLight);
-
-const sunOffset = new THREE.Vector3(120, 150, -90);
-
-const sunLight = new THREE.DirectionalLight(0xfffaeb, 2.0);
-sunLight.castShadow = true;
-sunLight.shadow.camera.left = -90;
-sunLight.shadow.camera.right = 90;
-sunLight.shadow.camera.top = 90;
-sunLight.shadow.camera.bottom = -90;
-sunLight.shadow.camera.near = 0.1;
-sunLight.shadow.camera.far = 500;
-sunLight.shadow.mapSize.width = 2048;
-sunLight.shadow.mapSize.height = 2048;
-sunLight.shadow.bias = -0.0005; 
-scene.add(sunLight);
-scene.add(sunLight.target); 
-
-// --- SKY ---
-const skyUniforms = {
-    topColor:     { value: new THREE.Color(0x3a7bd5) },
-    bottomColor:  { value: new THREE.Color(0xcfe6ff) },
-    sunDirection: { value: sunOffset.clone().normalize() },
-    exponent:     { value: 0.6 }
-};
-
-const sky = new THREE.Mesh(
-    new THREE.SphereGeometry(450, 32, 24),
-    new THREE.ShaderMaterial({
-        uniforms: skyUniforms,
-        side: THREE.BackSide,
-        fog: false,
-        depthWrite: false,
-        vertexShader: `
-            varying vec3 vDir;
-            void main() {
-                vDir = normalize(position);
-                gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-            }
-        `,
-        fragmentShader: `
-            uniform vec3 topColor;
-            uniform vec3 bottomColor;
-            uniform vec3 sunDirection;
-            uniform float exponent;
-            varying vec3 vDir;
-            void main() {
-                // Added a slight smoothstep so the gradient blends perfectly below the horizon line
-                float h = smoothstep(-0.02, 1.0, max(vDir.y, 0.0));
-                vec3 skyColor = mix(bottomColor, topColor, pow(h, exponent));
-                
-                float sunAmount = max(dot(vDir, normalize(sunDirection)), 0.0);
-                float sunDisc = smoothstep(0.998, 0.999, sunAmount);
-                vec3 glow = vec3(1.0, 0.95, 0.82) * pow(sunAmount, 128.0) * 1.5;
-                vec3 halo = vec3(1.0, 0.9, 0.72) * pow(sunAmount, 16.0) * 0.4;
-                
-                vec3 finalColor = skyColor + glow + halo + (vec3(1.0, 0.98, 0.9) * sunDisc * 2.0);
-                gl_FragColor = vec4(finalColor, 1.0);
-
-                // FIXED HORIZON LINE: Apply standard Three.js ToneMapping & ColorSpace to the shader.
-                // This ensures the sky's bottom color perfectly matches the ToneMapped fog color.
-                #include <tonemapping_fragment>
-                #include <colorspace_fragment>
-            }
-        `
-    })
-);
-scene.add(sky);
-
-// --- WATER (Rivers & Ponds) ---
-const waterCanvas = document.createElement('canvas');
-waterCanvas.width = 16;
-waterCanvas.height = 16;
-const wCtx = waterCanvas.getContext('2d');
-wCtx.fillStyle = '#3a87d4'; 
-wCtx.fillRect(0, 0, 16, 16);
-
-const waterTex = new THREE.CanvasTexture(waterCanvas);
-// LOD Setup for Water
-waterTex.generateMipmaps = true;
-waterTex.magFilter = THREE.NearestFilter;
-waterTex.minFilter = THREE.NearestMipmapLinearFilter; 
-waterTex.colorSpace = THREE.SRGBColorSpace;
-waterTex.wrapS = THREE.RepeatWrapping;
-waterTex.wrapT = THREE.RepeatWrapping;
-waterTex.repeat.set(3000/16, 3000/16); 
-
-const waterGeo = new THREE.PlaneGeometry(3000, 3000); 
-const waterMat = new THREE.MeshLambertMaterial({
-    map: waterTex,
-    transparent: true,
-    opacity: 0.55, 
-    side: THREE.DoubleSide,
-    depthWrite: false
-});
-
-const water = new THREE.Mesh(waterGeo, waterMat);
-water.rotation.x = -Math.PI / 2;
-water.position.y = SEA_LEVEL + 0.35; 
-water.renderOrder = 1;
-scene.add(water);
-
-// --- TEXTURES, MATERIALS & LODs ---
-const loader = new THREE.TextureLoader();
-const texturePaths = [
-    'textures/top.jpg',                  // 0
-    'textures/bottom.jpg',               // 1
-    'textures/side.jpg',                 // 2
-    'textures/stone.jpg',                // 3
-    'textures/bedrock.jpg',              // 4
-    'textures/leaves.png',               // 5 
-    'textures/wood_log_bottom_top.webp', // 6
-    'textures/wood_log.jpg'              // 7
-];
-
-const maxAniso = renderer.capabilities.getMaxAnisotropy();
-
-const textures = texturePaths.map((path, idx) => {
-    return loader.load(path, (tex) => {
-        // Explicitly enforce LOD & Mipmapping parameters
-        tex.generateMipmaps = true;
-        tex.magFilter = THREE.NearestFilter; // Sharp 16x16 up close
-        tex.minFilter = THREE.NearestMipmapLinearFilter; // Downgrades pixels naturally in the distance
-
-        if (idx === 5) {
-            const canvas = document.createElement('canvas');
-            canvas.width = tex.image.width;
-            canvas.height = tex.image.height;
-            const ctx = canvas.getContext('2d');
-            ctx.drawImage(tex.image, 0, 0);
-            const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-            const data = imgData.data;
-            for (let i = 0; i < data.length; i += 4) {
-                if (data[i] < 20 && data[i+1] < 20 && data[i+2] < 20) {
-                    data[i+3] = 0; 
-                }
-            }
-            ctx.putImageData(imgData, 0, 0);
-            tex.image = canvas;
-            tex.needsUpdate = true; // Signals Three.js to re-generate LOD mipmaps with the removed background
-        }
-    });
-});
-
-textures.forEach(tex => {
-    tex.colorSpace = THREE.SRGBColorSpace;
-    tex.anisotropy = maxAniso; // Helps distant textures not look completely blurred out at extreme angles
-});
-
-const multiMaterial = textures.map((tex, i) => {
-    const isLeaves = i === 5;
-    return new THREE.MeshLambertMaterial({ 
-        map: tex, 
-        vertexColors: true,
-        transparent: isLeaves, 
-        alphaTest: isLeaves ? 0.1 : 0, 
-        side: isLeaves ? THREE.DoubleSide : THREE.FrontSide
-    });
-});
-
-// --- DEBUG GUI CONTROLS ---
-const params = {
-    freeze: false,
-    infiniteTerrain: true,
-    renderDistance: 10,
-    cullingLevel: 'Face + Chunk (Optimized)',
-    vanillaShader: true,
-    chunksPerFrame: 2
-};
-
-const gui = new GUI();
-const advancedFolder = gui.addFolder('Advanced Controls');
-advancedFolder.close();
-
-advancedFolder.add(params, 'vanillaShader').name('Vanilla Shader (Warm)').onChange((enabled) => {
-    if (enabled) {
-        skyUniforms.topColor.value.setHex(0x3a7bd5);
-        skyUniforms.bottomColor.value.setHex(0xcfe6ff);
-        scene.fog.color.setHex(0xcfe6ff);
-        scene.background = scene.fog.color; // Keep synchronized to avoid horizon lines
-        sunLight.color.setHex(0xfffaeb); 
-        sunLight.intensity = 2.0;
-        hemiLight.color.setHex(0xe6f0fa); 
-        hemiLight.groundColor.setHex(0x888899); 
-    } else {
-        skyUniforms.topColor.value.setHex(0x2f6fb5);
-        skyUniforms.bottomColor.value.setHex(0xbfe0ff);
-        scene.fog.color.setHex(0xbfe0ff);
-        scene.background = scene.fog.color;
-        sunLight.color.setHex(0xffffff); 
-        sunLight.intensity = 1.8;
-        hemiLight.color.setHex(0xffffff); 
-        hemiLight.groundColor.setHex(0x777777); 
-    }
-});
-
-advancedFolder.add(params, 'infiniteTerrain').name('Infinite Terrain');
-advancedFolder.add(params, 'renderDistance', 2, 20, 1).name('Render Distance').onChange(() => reloadWorld());
-advancedFolder.add(params, 'cullingLevel', [
-    'None (Lags Max!)', 
-    'Face Only (No Chunk Culling)', 
-    'Face + Chunk (Optimized)'
-]).name('Culling Level').onChange(() => reloadWorld());
-advancedFolder.add(params, 'chunksPerFrame', 1, 8, 1).name('Chunk Load Budget');
-advancedFolder.add(params, 'freeze').name('Freeze Engine').onChange((isFrozen) => {
-    activeChunks.forEach(chunkMesh => {
-        chunkMesh.frustumCulled = !isFrozen && params.cullingLevel === 'Face + Chunk (Optimized)';
-    });
-});
-
-// --- TERRAIN GENERATION ---
+// --- MATH & NOISE UTILS ---
 const noise2D = createNoise2D();
-const CHUNK_SIZE = 16;
-const activeChunks = new Map();
-const pendingChunks = new Set();
-let chunkQueue = [];
 
 function fbm2D(x, z, octaves, lacunarity, gain) {
     let amplitude = 1, frequency = 1, sum = 0, norm = 0;
@@ -332,245 +89,593 @@ function hash(x, z) {
     return n - Math.floor(n);
 }
 
-const SNOW_LINE = SEA_LEVEL + 50;
+// --- SCENE SETUP ---
+const scene = new THREE.Scene();
+scene.fog = new THREE.Fog(0x8bb8e8, 30, 150);
+scene.background = scene.fog.color; 
+
+const SEA_LEVEL = 20;
+
+const camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.1, 1000);
+camera.position.set(0, 100, 0); 
+
+// --- AUDIO SETUP ---
+const listener = new THREE.AudioListener();
+camera.add(listener);
+const bgm = new THREE.Audio(listener);
+const audioLoader = new THREE.AudioLoader();
+audioLoader.load('bg.ogg', (buffer) => {
+    bgm.setBuffer(buffer);
+    bgm.setLoop(true);
+    bgm.setVolume(1.0); 
+});
+
+const renderer = new THREE.WebGLRenderer({ antialias: true, desynchronized: true, powerPreference: "high-performance" });
+renderer.setSize(window.innerWidth,window.innerHeight);
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.15;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+document.body.appendChild(renderer.domElement);
+
+const controls = new PointerLockControls(camera,document.body);
+const info = document.getElementById("info");
+info.onclick = () => {
+    controls.lock();
+    if (bgm.buffer && !bgm.isPlaying) {
+        bgm.play();
+    }
+};
+controls.addEventListener("lock", () => info.style.display="none");
+controls.addEventListener("unlock", () => info.style.display="block");
+scene.add(controls.getObject());
+
+// --- LIGHTING ---
+const hemiLight = new THREE.HemisphereLight(0xffffff, 0x666677, 0.85); 
+scene.add(hemiLight);
+
+const sunOffset = new THREE.Vector3(120, 150, -90);
+const sunLight = new THREE.DirectionalLight(0xfff3e0, 2.9);
+sunLight.castShadow = true;
+sunLight.shadow.camera.left = -120;
+sunLight.shadow.camera.right = 120;
+sunLight.shadow.camera.top = 120;
+sunLight.shadow.camera.bottom = -120;
+sunLight.shadow.camera.near = 0.1;
+sunLight.shadow.camera.far = 600;
+sunLight.shadow.mapSize.width = 1024; 
+sunLight.shadow.mapSize.height = 1024;
+sunLight.shadow.bias = -0.0005; 
+scene.add(sunLight);
+scene.add(sunLight.target); 
+
+// --- SKY SHADER ---
+const skyUniforms = {
+    topColor:     { value: new THREE.Color(0x2863b5) }, 
+    bottomColor:  { value: new THREE.Color(0x8bb8e8) }, 
+    sunDirection: { value: sunOffset.clone().normalize() },
+    exponent:     { value: 0.65 }
+};
+
+const sky = new THREE.Mesh(
+    new THREE.SphereGeometry(450, 32, 24),
+    new THREE.ShaderMaterial({
+        uniforms: skyUniforms,
+        side: THREE.BackSide,
+        fog: false,
+        depthWrite: false,
+        vertexShader: `
+            varying vec3 vDir;
+            void main() {
+                vDir = normalize(position);
+                gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+            }
+        `,
+        fragmentShader: `
+            uniform vec3 topColor;
+            uniform vec3 bottomColor;
+            uniform vec3 sunDirection;
+            uniform float exponent;
+            varying vec3 vDir;
+            void main() {
+                float h = smoothstep(-0.02, 1.0, max(vDir.y, 0.0));
+                vec3 skyColor = mix(bottomColor, topColor, pow(h, exponent));
+                
+                float sunAmount = max(dot(vDir, normalize(sunDirection)), 0.0);
+                float sunDisc = smoothstep(0.998, 0.999, sunAmount);
+                vec3 glow = vec3(1.0, 0.85, 0.6) * pow(sunAmount, 128.0) * 1.8; 
+                vec3 halo = vec3(1.0, 0.7, 0.4) * pow(sunAmount, 16.0) * 0.5;
+                
+                vec3 finalColor = skyColor + glow + halo + (vec3(1.0, 0.98, 0.9) * sunDisc * 2.0);
+                gl_FragColor = vec4(finalColor, 1.0);
+
+                #include <tonemapping_fragment>
+                #include <colorspace_fragment>
+            }
+        `
+    })
+);
+scene.add(sky);
+
+// --- BLURRY 2D CLOUD SYSTEM ---
+const cloudCanvas = document.createElement('canvas');
+cloudCanvas.width = 512;
+cloudCanvas.height = 512;
+const cCtx = cloudCanvas.getContext('2d');
+const imgData = cCtx.createImageData(512, 512);
+for(let i=0; i<512; i++){
+    for(let j=0; j<512; j++){
+        let n = fbm2D(i/64, j/64, 5, 2.0, 0.5); 
+        let normalized = n * 0.5 + 0.5;
+        let alpha = smoothstep(0.45, 0.75, normalized) * 255;
+        let idx = (i + j * 512) * 4;
+        imgData.data[idx] = 255;     
+        imgData.data[idx+1] = 255;   
+        imgData.data[idx+2] = 255;   
+        imgData.data[idx+3] = alpha; 
+    }
+}
+cCtx.putImageData(imgData, 0, 0);
+const cloudTex = new THREE.CanvasTexture(cloudCanvas);
+cloudTex.wrapS = THREE.RepeatWrapping;
+cloudTex.wrapT = THREE.RepeatWrapping;
+cloudTex.magFilter = THREE.LinearFilter; 
+cloudTex.minFilter = THREE.LinearMipmapLinearFilter;
+cloudTex.repeat.set(5, 5); 
+
+const cloudPlaneGeo = new THREE.PlaneGeometry(8000, 8000);
+const cloudPlaneMat = new THREE.MeshBasicMaterial({
+    map: cloudTex,
+    transparent: true,
+    opacity: 0.75,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+    fog: true
+});
+const cloudPlane = new THREE.Mesh(cloudPlaneGeo, cloudPlaneMat);
+cloudPlane.rotation.x = -Math.PI / 2;
+cloudPlane.position.y = 200; 
+scene.add(cloudPlane);
+
+// --- GLOBAL OCEAN WATER ---
+const waterCanvas = document.createElement('canvas');
+waterCanvas.width = 16;
+waterCanvas.height = 16;
+const wCtx = waterCanvas.getContext('2d');
+wCtx.fillStyle = '#2f7fc9'; 
+wCtx.fillRect(0, 0, 16, 16);
+
+const waterTex = new THREE.CanvasTexture(waterCanvas);
+waterTex.generateMipmaps = true;
+waterTex.magFilter = THREE.NearestFilter;
+waterTex.minFilter = THREE.NearestMipmapLinearFilter; 
+waterTex.colorSpace = THREE.SRGBColorSpace;
+waterTex.wrapS = THREE.RepeatWrapping;
+waterTex.wrapT = THREE.RepeatWrapping;
+waterTex.repeat.set(3000/16, 3000/16); 
+
+const waterGeo = new THREE.PlaneGeometry(3000, 3000); 
+const waterMat = new THREE.MeshStandardMaterial({
+    map: waterTex,
+    color: 0x3a87d4,
+    transparent: true,
+    opacity: 0.75, 
+    roughness: 0.05,  
+    metalness: 0.15,
+    side: THREE.DoubleSide,
+    depthWrite: false
+});
+
+const water = new THREE.Mesh(waterGeo, waterMat);
+water.rotation.x = -Math.PI / 2;
+water.position.y = SEA_LEVEL + 0.35; 
+water.renderOrder = 1;
+scene.add(water);
+
+// --- TEXTURES & MATERIALS ---
+const loader = new THREE.TextureLoader();
+const texturePaths = [
+    'textures/top.jpg',                  // 0
+    'textures/bottom.jpg',               // 1
+    'textures/side.jpg',                 // 2
+    'textures/stone.jpg',                // 3
+    'textures/bedrock.jpg',              // 4
+    'textures/leaves.png',               // 5 
+    'textures/wood_log_bottom_top.webp', // 6
+    'textures/wood_log.jpg',             // 7
+    'textures/sand.png'                  // 8 
+];
+
+const maxAniso = renderer.capabilities.getMaxAnisotropy();
+
+const textures = texturePaths.map((path, idx) => {
+    return loader.load(path, (tex) => {
+        tex.generateMipmaps = true;
+        tex.magFilter = THREE.NearestFilter;
+        tex.minFilter = THREE.NearestMipmapLinearFilter;
+
+        if (idx === 5) {
+            const canvas = document.createElement('canvas');
+            canvas.width = tex.image.width;
+            canvas.height = tex.image.height;
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(tex.image, 0, 0);
+            const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+            const data = imgData.data;
+            for (let i = 0; i < data.length; i += 4) {
+                if (data[i] < 20 && data[i+1] < 20 && data[i+2] < 20) {
+                    data[i+3] = 0; 
+                }
+            }
+            ctx.putImageData(imgData, 0, 0);
+            tex.image = canvas;
+            tex.needsUpdate = true;
+        }
+    });
+});
+
+textures.forEach(tex => { tex.colorSpace = THREE.SRGBColorSpace; tex.anisotropy = maxAniso; });
+
+const multiMaterial = textures.map((tex, i) => {
+    const isLeaves = i === 5;
+    return new THREE.MeshLambertMaterial({ 
+        map: tex, 
+        vertexColors: true,
+        transparent: isLeaves, 
+        alphaTest: isLeaves ? 0.1 : 0, 
+        side: isLeaves ? THREE.DoubleSide : THREE.FrontSide
+    });
+});
+
+// PUSH CUSTOM MATERIAL FOR VOLUMETRIC POND WATER (Index 9)
+multiMaterial.push(new THREE.MeshLambertMaterial({
+    color: 0xffffff,
+    vertexColors: true,
+    transparent: true,
+    opacity: 0.75,
+    side: THREE.DoubleSide,
+    depthWrite: false
+}));
+
+// --- DEBUG GUI CONTROLS ---
+const params = {
+    infiniteTerrain: true,
+    renderDistance: 8,
+    chunksPerFrame: 1,
+    renderClouds: true,
+    renderShadow: true,
+    cullingLevel: true,
+    engineFreeze: false
+};
+
+const gui = new GUI();
+const advancedFolder = gui.addFolder('Advanced Controls');
+advancedFolder.close();
+
+advancedFolder.add(params, 'infiniteTerrain').name('Infinite Terrain');
+advancedFolder.add(params, 'renderDistance', 2, 20, 1).name('Render Distance').onChange(() => reloadWorld());
+advancedFolder.add(params, 'chunksPerFrame', 1, 8, 1).name('Chunk Load Budget');
+advancedFolder.add(params, 'renderClouds').name('RENDER CLOUD');
+advancedFolder.add(params, 'renderShadow').name('RENDER SHADOW').onChange(v => {
+    sunLight.castShadow = v;
+});
+advancedFolder.add(params, 'cullingLevel').name('CULLING LEVEL').onChange(v => {
+    activeChunks.forEach(m => m.frustumCulled = v);
+});
+advancedFolder.add(params, 'engineFreeze').name('ENGINE FREEZE');
+
+// --- TERRAIN GENERATION ---
+const CHUNK_SIZE = 16;
+const PAD = 2; 
+const TOTAL_SIZE = CHUNK_SIZE + PAD * 2; 
+
+const activeChunks = new Map();
+const pendingChunks = new Set();
+let chunkQueue = [];
+
+// Block IDs mapping
+const B_AIR = 0, B_BEDROCK = 1, B_STONE = 2, B_DIRT = 3, B_GRASS = 4, B_SAND = 5, B_LOG = 6, B_LEAVES = 7, B_WATER = 8;
+const SNOW_LINE = SEA_LEVEL + 75;
 
 function terrainInfo(x, z) {
-    const continent = fbm2D(x / 800 + 1500, z / 800 + 1500, 4, 2.0, 0.5); 
-    const erosion   = fbm2D(x / 600 - 4000, z / 600 - 4000, 4, 2.0, 0.5); 
-    const elevation = continent * 20;
+    const continent = fbm2D(x / 1400 + 1500, z / 1400 + 1500, 4, 2.0, 0.5); 
+    const erosion   = fbm2D(x / 800 - 4000, z / 800 - 4000, 4, 2.0, 0.5); 
+    
+    // Large Desert biomes
+    const tempNoise = fbm2D(x / 1500 + 8000, z / 1500 + 8000, 3, 2.0, 0.5); 
+    const isDesert = tempNoise > 0.48;
 
-    let ruggedness = (continent * 0.7 - erosion * 0.5 + 1.2) / 2;
+    const elevation = continent * 50 + 18; 
+    let ruggedness = (continent * 0.7 - erosion * 0.5 + 1.1) / 2; 
     ruggedness = THREE.MathUtils.clamp(ruggedness, 0, 1);
 
-    const mountainWeight = smoothstep(0.65, 0.9, ruggedness);
-    const plainsWeight   = 1 - smoothstep(0.2, 0.5, ruggedness);
+    const mountainWeight = smoothstep(0.55, 0.85, ruggedness);
+    const plainsWeight   = 1 - smoothstep(0.1, 0.4, ruggedness);
     const hillsWeight    = Math.max(0, 1 - plainsWeight - mountainWeight);
 
-    const base    = fbm2D(x / 180, z / 180, 4, 2.0, 0.5);       
-    const detail  = fbm2D(x / 15, z / 15, 3, 2.0, 0.5);          
-    const rolling = fbm2D(x / 80, z / 80, 4, 2.0, 0.5);          
-    const ridge   = ridgedNoise(x / 120, z / 120, 5, 2.0, 0.5);  
+    const base    = fbm2D(x / 300, z / 300, 4, 2.0, 0.5);       
+    const detail  = fbm2D(x / 50, z / 50, 2, 2.0, 0.5);          
+    const rolling = fbm2D(x / 150, z / 150, 3, 2.0, 0.5);          
+    const ridge   = ridgedNoise(x / 450, z / 450, 4, 2.0, 0.4); 
 
-    const plainsRelief   = base * 2.0 + detail * 0.5;
-    const hillsRelief     = base * 6 + rolling * 10 + detail * 1.5;
-    const mountainRelief = base * 10 + ridge * 85 + rolling * 8 + detail * 3;
+    const plainsRelief   = base * 5.0 + detail * 1.5;
+    const hillsRelief    = base * 14.0 + rolling * 22.0 + detail * 2.0;
+    const mountainRelief = base * 70.0 + ridge * 60.0 + rolling * 15.0; 
 
     const relief = plainsRelief * plainsWeight + hillsRelief * hillsWeight + mountainRelief * mountainWeight;
-
     const hRaw = SEA_LEVEL + elevation + relief;
     const h = Math.max(2, Math.floor(hRaw)); 
 
-    const rocky = mountainWeight > 0.4 || (mountainWeight > 0.15 && ridge > 0.65);
+    const rocky = mountainWeight > 0.5 || (mountainWeight > 0.3 && ridge > 0.6);
     const snowy = h > SNOW_LINE;
 
-    return { height: h, rocky, snowy };
+    // PLAINS POND LOGIC (Now more frequent)
+    const pondNoise = fbm2D(x / 50 + 5000, z / 50 + 5000, 2, 2.0, 0.5); 
+    let isPond = false;
+    let pondDepth = 0;
+    if (plainsWeight > 0.5 && !isDesert && !rocky && pondNoise > 0.45) {
+        isPond = true;
+        pondDepth = Math.floor((pondNoise - 0.45) * 15) + 1; 
+    }
+
+    // PLAINS PATCHES (Stone and Sand common in plains)
+    const patchNoise = fbm2D(x / 80 + 1000, z / 80 + 1000, 3, 2.0, 0.5);
+    let patchType = 0; // 0 = Normal, 1 = Stone, 2 = Sand
+    if (plainsWeight > 0.5 && !rocky && !snowy && !isDesert && !isPond) {
+        if (patchNoise > 0.65) patchType = 1; // Rocky outcroppings
+        else if (patchNoise < 0.35) patchType = 2; // Small desert pockets
+    }
+
+    // TREE DENSITY (Variable thickness across plains/hills)
+    const treeDensityNoise = fbm2D(x / 250 + 3000, z / 250 + 3000, 2, 2.0, 0.5);
+    let treeProb = 0.999; 
+    if (treeDensityNoise > 0.6) treeProb = 0.94; // Very high (dense forest)
+    else if (treeDensityNoise > 0.4) treeProb = 0.985; // Middle (lightly dotted)
+    else treeProb = 0.998; // Very low (sparse plains)
+
+    return { height: h, rocky, snowy, isDesert, isPond, pondDepth, patchType, treeProb };
 }
 
 const faceTints = [
-    [1.0, 1.0, 1.0],    // 0: top 
-    [0.4, 0.4, 0.4],    // 1: bottom 
-    [0.8, 0.8, 0.8],    // 2: left
-    [0.8, 0.8, 0.8],    // 3: right
-    [0.6, 0.6, 0.6],    // 4: front
-    [0.6, 0.6, 0.6]     // 5: back
+    [1.0, 1.0, 1.0], [0.65, 0.65, 0.65], [0.8, 0.8, 0.8], 
+    [0.8, 0.8, 0.8], [0.75, 0.75, 0.75], [0.75, 0.75, 0.75] 
 ];
 
 const voxelFaces = [
-    { corners: [ [0,1,0], [0,1,1], [1,1,0], [1,1,1] ], n: [0,1,0] }, 
-    { corners: [ [0,0,1], [0,0,0], [1,0,1], [1,0,0] ], n: [0,-1,0] }, 
-    { corners: [ [0,1,0], [0,0,0], [0,1,1], [0,0,1] ], n: [-1,0,0] }, 
-    { corners: [ [1,1,1], [1,0,1], [1,1,0], [1,0,0] ], n: [1,0,0] }, 
-    { corners: [ [0,1,1], [0,0,1], [1,1,1], [1,0,1] ], n: [0,0,1] }, 
-    { corners: [ [1,1,0], [1,0,0], [0,1,0], [0,0,0] ], n: [0,0,-1] } 
+    { corners: [ [0,1,0], [0,1,1], [1,1,0], [1,1,1] ], n: [0,1,0], dir: [0,1,0] },   
+    { corners: [ [0,0,1], [0,0,0], [1,0,1], [1,0,0] ], n: [0,-1,0], dir: [0,-1,0] }, 
+    { corners: [ [0,1,0], [0,0,0], [0,1,1], [0,0,1] ], n: [-1,0,0], dir: [-1,0,0] }, 
+    { corners: [ [1,1,1], [1,0,1], [1,1,0], [1,0,0] ], n: [1,0,0], dir: [1,0,0] },   
+    { corners: [ [0,1,1], [0,0,1], [1,1,1], [1,0,1] ], n: [0,0,1], dir: [0,0,1] },   
+    { corners: [ [1,1,0], [1,0,0], [0,1,0], [0,0,0] ], n: [0,0,-1], dir: [0,0,-1] }  
 ];
 const uvCoords = [ [0,1], [0,0], [1,1], [1,0] ];
 const indexOrder = [0, 1, 2, 2, 1, 3]; 
 
-function getMaterialIndex(blockType, faceIdx) {
-    if (blockType === 'grass') {
-        if (faceIdx === 0) return 0; 
-        if (faceIdx === 1) return 1; 
-        return 2; 
-    }
-    if (blockType === 'dirt') return 1;
-    if (blockType === 'stone') return 3;
-    if (blockType === 'bedrock') return 4;
-    if (blockType === 'leaves') return 5;
-    if (blockType === 'log') {
-        if (faceIdx === 0 || faceIdx === 1) return 6; 
-        return 7; 
-    }
+function getMaterialIndex(b, faceIdx) {
+    if (b === B_GRASS) return (faceIdx === 0) ? 0 : (faceIdx === 1 ? 1 : 2);
+    if (b === B_DIRT) return 1;
+    if (b === B_STONE) return 3;
+    if (b === B_BEDROCK) return 4;
+    if (b === B_LEAVES) return 5;
+    if (b === B_LOG) return (faceIdx === 0 || faceIdx === 1) ? 6 : 7;
+    if (b === B_SAND) return 8;
+    if (b === B_WATER) return 9; 
     return 3;
 }
 
-function isSolid(b) {
-    return b !== null && b !== 'leaves';
+function shouldShowFace(currentMat, adjacentMat) {
+    if (adjacentMat === B_AIR) return true; 
+    if (currentMat === B_LEAVES && adjacentMat === B_LEAVES) return false; 
+    
+    // Culling rules for volumetric water rendering
+    if (currentMat === B_WATER && adjacentMat === B_WATER) return false; 
+    if (currentMat === B_WATER && adjacentMat !== B_AIR) return false; 
+    if (adjacentMat === B_WATER) return true; 
+    
+    if (adjacentMat === B_LEAVES) return true; 
+    return false; 
 }
 
 function generateChunk(cx, cz) {
-    const chunkData = Array.from({ length: 8 }, () => ({ pos: [], norm: [], uv: [], color: [], index: [] }));
-
     const startX = cx * CHUNK_SIZE;
     const startZ = cz * CHUNK_SIZE;
 
-    const mapSize = CHUNK_SIZE + 4; 
-    const hMap = new Int16Array(mapSize * mapSize);
-    const rockyMap = new Uint8Array(mapSize * mapSize);
-    const snowyMap = new Uint8Array(mapSize * mapSize);
-    const treeMap = new Uint8Array(mapSize * mapSize);
+    let chunkMaxY = 0;
+    const hMap = new Int16Array(TOTAL_SIZE * TOTAL_SIZE);
+    const rockyMap = new Uint8Array(TOTAL_SIZE * TOTAL_SIZE);
+    const snowyMap = new Uint8Array(TOTAL_SIZE * TOTAL_SIZE);
+    const desertMap = new Uint8Array(TOTAL_SIZE * TOTAL_SIZE);
+    const pondMap = new Uint8Array(TOTAL_SIZE * TOTAL_SIZE);
+    const pondDepthMap = new Uint8Array(TOTAL_SIZE * TOTAL_SIZE);
+    const patchMap = new Uint8Array(TOTAL_SIZE * TOTAL_SIZE);
+    const treeMap = new Uint8Array(TOTAL_SIZE * TOTAL_SIZE);
 
-    for (let lx = 0; lx < mapSize; lx++) {
-        for (let lz = 0; lz < mapSize; lz++) {
-            const gx = startX + lx - 2;
-            const gz = startZ + lz - 2;
+    for (let lx = 0; lx < TOTAL_SIZE; lx++) {
+        for (let lz = 0; lz < TOTAL_SIZE; lz++) {
+            const gx = startX + lx - PAD;
+            const gz = startZ + lz - PAD;
             const info = terrainInfo(gx, gz);
-            const idx = lx * mapSize + lz;
+            const idx = lx * TOTAL_SIZE + lz;
+            
             hMap[idx] = info.height;
             rockyMap[idx] = info.rocky ? 1 : 0;
             snowyMap[idx] = info.snowy ? 1 : 0;
+            desertMap[idx] = info.isDesert ? 1 : 0;
+            pondMap[idx] = info.isPond ? 1 : 0;
+            pondDepthMap[idx] = info.pondDepth;
+            patchMap[idx] = info.patchType;
             
-            const isTree = (info.height > SEA_LEVEL + 2 && !info.rocky && !info.snowy && hash(gx, gz) > 0.985);
+            // Block trees from spawning inside water, stone, or sand patches
+            const isTree = (info.height > SEA_LEVEL + 2 && !info.rocky && !info.snowy && !info.isDesert && !info.isPond && info.patchType === 0 && hash(gx, gz) > info.treeProb);
             treeMap[idx] = isTree ? 1 : 0;
+
+            if (info.height > chunkMaxY) chunkMaxY = info.height;
         }
     }
+    
+    const volumeHeight = chunkMaxY + 8; 
+    const volume = new Uint8Array(TOTAL_SIZE * volumeHeight * TOTAL_SIZE);
+    
+    function vIdx(x, y, z) {
+        return x + z * TOTAL_SIZE + y * TOTAL_SIZE * TOTAL_SIZE;
+    }
 
-    const getH = (lx, lz) => hMap[(lx + 2) * mapSize + (lz + 2)];
-    const isRockyLocal = (lx, lz) => rockyMap[(lx + 2) * mapSize + (lz + 2)] === 1;
-    const isSnowyLocal = (lx, lz) => snowyMap[(lx + 2) * mapSize + (lz + 2)] === 1;
-    const hasTreeLocal = (lx, lz) => treeMap[(lx + 2) * mapSize + (lz + 2)] === 1;
-
-    function getBlock(lx, ly, lz) {
-        if (lx < -2 || lx > CHUNK_SIZE + 1 || lz < -2 || lz > CHUNK_SIZE + 1) return null;
-        
-        const h = getH(lx, lz);
-        if (ly <= h) {
-            if (ly === 0) return 'bedrock';
-            const maxSlope = Math.max(
-                Math.abs(h - getH(lx - 1, lz)), Math.abs(h - getH(lx + 1, lz)),
-                Math.abs(h - getH(lx, lz + 1)), Math.abs(h - getH(lx, lz - 1))
-            );
-            const rocky = isRockyLocal(lx, lz) || maxSlope > 4;
+    for (let lx = 0; lx < TOTAL_SIZE; lx++) {
+        for (let lz = 0; lz < TOTAL_SIZE; lz++) {
+            const idx2D = lx * TOTAL_SIZE + lz;
+            const h = hMap[idx2D];
+            const rocky = rockyMap[idx2D] === 1;
+            const isDesert = desertMap[idx2D] === 1;
+            const isPond = pondMap[idx2D] === 1;
+            const pondDepth = pondDepthMap[idx2D];
+            const patchType = patchMap[idx2D];
             
-            if (rocky) return 'stone';
-            if (ly === h) return 'grass';
-            if (ly > h - 3) return 'dirt';
-            return 'stone';
-        }
-        
-        for (let dx = -2; dx <= 2; dx++) {
-            for (let dz = -2; dz <= 2; dz++) {
-                const nx = lx + dx;
-                const nz = lz + dz;
-                if (nx >= -2 && nx <= CHUNK_SIZE + 1 && nz >= -2 && nz <= CHUNK_SIZE + 1) {
-                    if (hasTreeLocal(nx, nz)) {
-                        const th = getH(nx, nz);
-                        const dy = ly - th; 
-                        
-                        if (dx === 0 && dz === 0 && dy >= 1 && dy <= 4) return 'log';
-                        
-                        if (dy === 3 || dy === 4) {
-                            if (Math.abs(dx) <= 2 && Math.abs(dz) <= 2) {
-                                if (Math.abs(dx) === 2 && Math.abs(dz) === 2 && hash(startX+nx+dy, startZ+nz) > 0.5) continue;
-                                if (dx === 0 && dz === 0) continue; 
-                                return 'leaves';
+            const terrainH = isPond ? Math.max(1, h - pondDepth) : h;
+            
+            const isBeach = (!rocky && !isDesert && !isPond && terrainH >= SEA_LEVEL - 1 && terrainH <= SEA_LEVEL + 2);
+            
+            for (let y = 0; y <= h; y++) {
+                let block = B_STONE;
+                if (y === 0) {
+                    block = B_BEDROCK;
+                } else if (isPond && y > terrainH && y <= h) {
+                    block = B_WATER;
+                } else {
+                    if (isDesert || patchType === 2) {
+                        if (y >= terrainH - 4) block = B_SAND;
+                        else block = B_STONE;
+                    } else if (patchType === 1) {
+                        block = B_STONE; // Exposed rocky outcroppings in plains
+                    } else if (isBeach) {
+                        if (y >= terrainH - 3) block = B_SAND;
+                        else block = B_STONE;
+                    } else if (!rocky) {
+                        if (y === terrainH) block = isPond ? B_DIRT : B_GRASS;
+                        else if (y > terrainH - 3) block = B_DIRT;
+                    }
+                }
+
+                if (y < volumeHeight) {
+                    volume[vIdx(lx, y, lz)] = block;
+                }
+            }
+
+            if (treeMap[idx2D] === 1) {
+                for (let dy = 1; dy <= 4; dy++) volume[vIdx(lx, h + dy, lz)] = B_LOG;
+                
+                for (let dx = -2; dx <= 2; dx++) {
+                    for (let dz = -2; dz <= 2; dz++) {
+                        const nx = lx + dx, nz = lz + dz;
+                        if (nx >= 0 && nx < TOTAL_SIZE && nz >= 0 && nz < TOTAL_SIZE) {
+                            for (let dy = 3; dy <= 6; dy++) {
+                                if (dy === 3 || dy === 4) {
+                                    if (Math.abs(dx) === 2 && Math.abs(dz) === 2 && hash(startX+nx, startZ+nz+dy) > 0.5) continue;
+                                    if (dx === 0 && dz === 0) continue;
+                                    volume[vIdx(nx, h + dy, nz)] = B_LEAVES;
+                                } else if (dy === 5 && Math.abs(dx) <= 1 && Math.abs(dz) <= 1) {
+                                    volume[vIdx(nx, h + dy, nz)] = B_LEAVES;
+                                } else if (dy === 6 && ((Math.abs(dx)<=1 && Math.abs(dz)<=1 && Math.abs(dx)!==Math.abs(dz)) || (dx===0&&dz===0))) {
+                                    volume[vIdx(nx, h + dy, nz)] = B_LEAVES;
+                                }
                             }
                         }
-                        if (dy === 5) {
-                            if (Math.abs(dx) <= 1 && Math.abs(dz) <= 1) return 'leaves';
-                        }
-                        if (dy === 6) {
-                            if ((Math.abs(dx) <= 1 && Math.abs(dz) <= 1 && Math.abs(dx) !== Math.abs(dz)) || (dx===0 && dz===0)) return 'leaves';
+                    }
+                }
+                
+                for (let dx = -1; dx <= 1; dx++) {
+                    for (let dz = -1; dz <= 1; dz++) {
+                        if (dx !== 0 || dz !== 0) {
+                            const nx = lx + dx, nz = lz + dz;
+                            if (nx >= 0 && nx < TOTAL_SIZE && nz >= 0 && nz < TOTAL_SIZE) {
+                                const gH = hMap[nx * TOTAL_SIZE + nz];
+                                if (hash(startX + nx, startZ + nz) > 0.85) {
+                                    volume[vIdx(nx, gH + 1, nz)] = B_LEAVES;
+                                }
+                            }
                         }
                     }
                 }
             }
         }
-        return null;
     }
 
-    for (let lx = 0; lx < CHUNK_SIZE; lx++) {
-        for (let lz = 0; lz < CHUNK_SIZE; lz++) {
-            const h = getH(lx, lz);
-            let maxY = h;
-            for(let dx=-2; dx<=2; dx++) {
-                for(let dz=-2; dz<=2; dz++) {
-                    if(hasTreeLocal(lx+dx, lz+dz)) maxY = Math.max(maxY, getH(lx+dx, lz+dz) + 6);
-                }
-            }
-
-            const x = startX + lx;
-            const z = startZ + lz;
-            const snowy = isSnowyLocal(lx, lz);
+    const chunkData = Array.from({ length: 10 }, () => ({ pos: [], norm: [], uv: [], color: [], index: [] }));
+    
+    for (let lx = PAD; lx < TOTAL_SIZE - PAD; lx++) {
+        for (let lz = PAD; lz < TOTAL_SIZE - PAD; lz++) {
+            const idx2D = lx * TOTAL_SIZE + lz;
+            const h = hMap[idx2D];
+            const snowy = snowyMap[idx2D] === 1;
             const grassVariation = (h % 7) / 7;
 
-            const neighborAvg = (getH(lx - 1, lz) + getH(lx + 1, lz) + getH(lx, lz + 1) + getH(lx, lz - 1)) / 4;
-            const baseAoFactor = THREE.MathUtils.clamp(1 - Math.max(0, neighborAvg - h) * 0.08, 0.35, 1.0);
+            const neighborAvg = (hMap[(lx-1)*TOTAL_SIZE+lz] + hMap[(lx+1)*TOTAL_SIZE+lz] + hMap[lx*TOTAL_SIZE+(lz+1)] + hMap[lx*TOTAL_SIZE+(lz-1)]) / 4;
+            const baseAoFactor = THREE.MathUtils.clamp(1 - Math.max(0, neighborAvg - h) * 0.08, 0.6, 1.0);
 
-            for (let y = 0; y <= maxY; y++) {
-                const matType = getBlock(lx, y, lz);
-                if (!matType) continue;
+            for (let y = 0; y < volumeHeight; y++) {
+                const bType = volume[vIdx(lx, y, lz)];
+                if (bType === B_AIR) continue;
 
-                const facesToShow = [];
-                if (params.cullingLevel === 'None (Lags Max!)') {
-                    facesToShow.push(0, 1, 2, 3, 4, 5);
-                } else {
-                    const nTop = getBlock(lx, y+1, lz);
-                    if (matType === 'leaves' ? nTop === null : !isSolid(nTop)) facesToShow.push(0);
-                    
-                    const nBot = getBlock(lx, y-1, lz);
-                    if (matType === 'leaves' ? nBot === null : !isSolid(nBot)) facesToShow.push(1);
-                    
-                    const nLeft = getBlock(lx-1, y, lz);
-                    if (matType === 'leaves' ? nLeft === null : !isSolid(nLeft)) facesToShow.push(2);
-                    
-                    const nRight = getBlock(lx+1, y, lz);
-                    if (matType === 'leaves' ? nRight === null : !isSolid(nRight)) facesToShow.push(3);
-                    
-                    const nFront = getBlock(lx, y, lz+1);
-                    if (matType === 'leaves' ? nFront === null : !isSolid(nFront)) facesToShow.push(4);
-                    
-                    const nBack = getBlock(lx, y, lz-1);
-                    if (matType === 'leaves' ? nBack === null : !isSolid(nBack)) facesToShow.push(5);
+                for (let fIdx = 0; fIdx < 6; fIdx++) {
+                    const dir = voxelFaces[fIdx].dir;
+                    const adjY = y + dir[1];
+                    let adjType = B_AIR;
+                    if (adjY >= 0 && adjY < volumeHeight) {
+                        adjType = volume[vIdx(lx + dir[0], adjY, lz + dir[2])];
+                    }
+
+                    if (shouldShowFace(bType, adjType)) {
+                        const matIdx = getMaterialIndex(bType, fIdx);
+                        const data = chunkData[matIdx];
+                        const f = voxelFaces[fIdx];
+                        let tint = [...faceTints[fIdx]];
+                        
+                        const isTop = fIdx === 0;
+                        const aoFactor = (y <= h) ? baseAoFactor : 1.0;
+
+                        if (isTop) {
+                            tint[0] *= aoFactor; tint[1] *= aoFactor; tint[2] *= aoFactor;
+                        } else {
+                            const sideGradient = 1.0 - (Math.max(0, h - y) * 0.02);
+                            const gradClamp = THREE.MathUtils.clamp(sideGradient, 0.65, 1.0);
+                            tint[0] *= gradClamp; tint[1] *= gradClamp; tint[2] *= gradClamp;
+                        }
+
+                        if (snowy && y === h && bType === B_GRASS && isTop) {
+                            tint = [0.96 * aoFactor, 0.97 * aoFactor, 1.0 * aoFactor];
+                        } else if (bType === B_GRASS && isTop) {
+                            tint[0] *= (0.80 + grassVariation * 0.15);
+                            tint[1] *= (0.95 + grassVariation * 0.05);
+                            tint[2] *= (0.60 + grassVariation * 0.20);
+                        } else if (bType === B_LEAVES) {
+                            tint[0] *= (0.75 + grassVariation * 0.20);
+                            tint[1] *= (0.95 + grassVariation * 0.05);
+                            tint[2] *= (0.65 + grassVariation * 0.20);
+                        } else if (bType === B_SAND && isTop) {
+                            tint[0] *= (0.95 + grassVariation * 0.05); 
+                            tint[1] *= (0.95 + grassVariation * 0.05);
+                            tint[2] *= (0.95 + grassVariation * 0.05);
+                        } else if (bType === B_WATER) {
+                            tint[0] *= 0.22;
+                            tint[1] *= 0.53;
+                            tint[2] *= 0.83;
+                        }
+
+                        const worldX = startX + (lx - PAD);
+                        const worldZ = startZ + (lz - PAD);
+                        const ndx = data.pos.length / 3; 
+
+                        for(let i=0; i<4; i++) {
+                            data.pos.push(worldX + f.corners[i][0] - 0.5, y + f.corners[i][1] - 0.5, worldZ + f.corners[i][2] - 0.5);
+                            data.norm.push(...f.n);
+                            data.uv.push(...uvCoords[i]);
+                            data.color.push(...tint);
+                        }
+                        indexOrder.forEach(idx => data.index.push(ndx + idx));
+                    }
                 }
-
-                facesToShow.forEach(faceIdx => {
-                    const f = voxelFaces[faceIdx];
-                    const matIdx = getMaterialIndex(matType, faceIdx);
-                    const data = chunkData[matIdx];
-                    let tint = [...faceTints[faceIdx]];
-                    
-                    const isTop = faceIdx === 0;
-                    const aoFactor = (y <= h) ? baseAoFactor : 1.0;
-
-                    if (isTop) {
-                        tint[0] *= aoFactor; tint[1] *= aoFactor; tint[2] *= aoFactor;
-                    } else {
-                        const sideGradient = 1.0 - (Math.max(0, h - y) * 0.02);
-                        const gradClamp = THREE.MathUtils.clamp(sideGradient, 0.5, 1.0);
-                        tint[0] *= gradClamp; tint[1] *= gradClamp; tint[2] *= gradClamp;
-                    }
-
-                    if (snowy && y === h && matType === 'grass' && isTop) {
-                        tint = [0.96 * aoFactor, 0.97 * aoFactor, 1.0 * aoFactor];
-                    } else if (matType === 'grass' && isTop) {
-                        tint[0] *= (0.85 + grassVariation * 0.15);
-                        tint[1] *= (0.95 + grassVariation * 0.10);
-                        tint[2] *= (0.75 + grassVariation * 0.20);
-                    } else if (matType === 'leaves') {
-                        tint[0] *= (0.80 + grassVariation * 0.20);
-                        tint[1] *= (0.95 + grassVariation * 0.05);
-                        tint[2] *= (0.70 + grassVariation * 0.20);
-                    }
-
-                    const ndx = data.pos.length / 3; 
-                    for(let i=0; i<4; i++) {
-                        data.pos.push(x + f.corners[i][0] - 0.5, y + f.corners[i][1] - 0.5, z + f.corners[i][2] - 0.5);
-                        data.norm.push(...f.n);
-                        data.uv.push(...uvCoords[i]);
-                        data.color.push(...tint);
-                    }
-                    indexOrder.forEach(idx => data.index.push(ndx + idx));
-                });
             }
         }
     }
@@ -581,15 +686,12 @@ function generateChunk(cx, cz) {
 
     chunkData.forEach((data, matIdx) => {
         if (data.pos.length === 0) return;
-
         finalPos.push(...data.pos);
         finalNorm.push(...data.norm);
         finalUv.push(...data.uv);
         finalColor.push(...data.color);
         data.index.forEach(i => finalIndex.push(i + vertexOffset));
-
         geo.addGroup(indexOffset, data.index.length, matIdx);
-
         vertexOffset += data.pos.length / 3;
         indexOffset += data.index.length;
     });
@@ -604,12 +706,7 @@ function generateChunk(cx, cz) {
         const mesh = new THREE.Mesh(geo, multiMaterial);
         mesh.castShadow = true;
         mesh.receiveShadow = true;
-        
-        if (params.cullingLevel === 'Face + Chunk (Optimized)' && !params.freeze) {
-            mesh.frustumCulled = true;
-        } else {
-            mesh.frustumCulled = false;
-        }
+        mesh.frustumCulled = params.cullingLevel; 
         
         scene.add(mesh);
         activeChunks.set(`${cx},${cz}`, mesh);
@@ -622,16 +719,16 @@ function reloadWorld() {
         scene.remove(mesh);
     });
     activeChunks.clear();
+
     chunkQueue.length = 0;
     pendingChunks.clear();
 }
 
 function updateTerrain() {
-    if (params.freeze || !params.infiniteTerrain) return;
+    if (!params.infiniteTerrain || params.engineFreeze) return;
 
     const playerChunkX = Math.floor(camera.position.x / CHUNK_SIZE);
     const playerChunkZ = Math.floor(camera.position.z / CHUNK_SIZE);
-
     const chunksToKeep = new Set();
     const needed = [];
 
@@ -661,17 +758,19 @@ function updateTerrain() {
 }
 
 function processChunkQueue() {
-    const budget = params.chunksPerFrame;
-    for (let i = 0; i < budget && chunkQueue.length > 0; i++) {
+    if (params.engineFreeze) return;
+    for (let i = 0; i < params.chunksPerFrame && chunkQueue.length > 0; i++) {
         const { cx, cz, key } = chunkQueue.shift();
         pendingChunks.delete(key);
-        if (!activeChunks.has(key)) generateChunk(cx, cz);
+        
+        if (!activeChunks.has(key)) {
+            generateChunk(cx, cz);
+        }
     }
 }
 
 // --- GAME MODE / MOVEMENT ---
 const EYE_HEIGHT = 1.62;      
-const STEP_HEIGHT = 1.05;     
 const GRAVITY = 40;
 const JUMP_VELOCITY = 10;
 const MAX_FALL_SPEED = 40;
@@ -700,36 +799,20 @@ function updateModeDisplay() {
 updateModeDisplay();
 
 function toggleGameMode() {
-    if (gameMode === 'spectator') {
-        gameMode = 'creative';
-        isFlying = false;
-    } else {
-        gameMode = 'spectator';
-    }
+    if (gameMode === 'spectator') { gameMode = 'creative'; isFlying = false; }
+    else { gameMode = 'spectator'; }
     verticalVelocity = 0;
     updateModeDisplay();
 }
 
-// --- CONTROLS ---
 const keys={};
 window.addEventListener("keydown",e=>{
-    if (e.code === 'F4') {
-        e.preventDefault();
-        if (!keys[e.code]) toggleGameMode();
-        keys[e.code] = true;
-        return;
-    }
-
+    if (e.code === 'F4') { e.preventDefault(); if (!keys[e.code]) toggleGameMode(); keys[e.code] = true; return; }
     if (e.code === 'Space' && gameMode === 'creative' && !keys[e.code]) {
         const now = performance.now();
-        if (now - lastSpaceTapTime < DOUBLE_TAP_WINDOW) {
-            isFlying = !isFlying;
-            verticalVelocity = 0;
-            updateModeDisplay();
-        }
+        if (now - lastSpaceTapTime < DOUBLE_TAP_WINDOW) { isFlying = !isFlying; verticalVelocity = 0; updateModeDisplay(); }
         lastSpaceTapTime = now;
     }
-
     keys[e.code]=true;
 });
 window.addEventListener("keyup",e=>{ keys[e.code]=false; });
@@ -780,13 +863,9 @@ function animate(){
         const newGround = terrainInfo(camera.position.x, camera.position.z).height + 0.5;
         const stepHeight = newGround - prevGround;
 
-        if (grounded && stepHeight > 0) {
-            camera.position.x = prevX;
-            camera.position.z = prevZ;
-        }
+        if (grounded && stepHeight > 0) { camera.position.x = prevX; camera.position.z = prevZ; }
 
         if (keys["Space"]) jump();
-
         verticalVelocity -= GRAVITY * dt;
         if (verticalVelocity < -MAX_FALL_SPEED) verticalVelocity = -MAX_FALL_SPEED;
         camera.position.y += verticalVelocity * dt;
@@ -805,6 +884,34 @@ function animate(){
     updateTerrain();
     processChunkQueue();
 
+    // WATER ANIMATION
+    waterTex.offset.x -= 0.05 * dt;
+    waterTex.offset.y -= 0.05 * dt;
+
+    // CLOUD ANIMATION
+    cloudTex.offset.x += 0.008 * dt;
+    cloudTex.offset.y += 0.003 * dt;
+    cloudPlane.position.x = camera.position.x;
+    cloudPlane.position.z = camera.position.z;
+
+    const isUnderwater = camera.position.y < (SEA_LEVEL + 0.35);
+    
+    if (isUnderwater) {
+        scene.fog.color.setHex(0x0f3659);
+        scene.background = scene.fog.color;
+        scene.fog.near = 0.1;
+        scene.fog.far = 45; 
+        sky.visible = false; 
+    } else {
+        scene.fog.color.setHex(0x8bb8e8);
+        scene.background = scene.fog.color;
+        scene.fog.near = (params.renderDistance * CHUNK_SIZE) - (CHUNK_SIZE * 0.5);
+        scene.fog.far = (params.renderDistance * CHUNK_SIZE) + (CHUNK_SIZE * 1.5);
+        sky.visible = true; 
+    }
+
+    cloudPlane.visible = params.renderClouds && !isUnderwater;
+
     sunLight.position.set(camera.position.x + sunOffset.x, camera.position.y + sunOffset.y, camera.position.z + sunOffset.z);
     sunLight.target.position.copy(camera.position);
     sunLight.target.updateMatrixWorld();
@@ -812,9 +919,6 @@ function animate(){
     sky.position.copy(camera.position);
     water.position.x = camera.position.x;
     water.position.z = camera.position.z;
-
-    scene.fog.near = (params.renderDistance * CHUNK_SIZE) - (CHUNK_SIZE * 0.5);
-    scene.fog.far = (params.renderDistance * CHUNK_SIZE) + (CHUNK_SIZE * 1.5);
 
     renderer.render(scene, camera); 
     
