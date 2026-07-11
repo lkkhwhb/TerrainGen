@@ -11,7 +11,7 @@
 }
 </script>
 
-<title>Minecraft Terrain - Plains Variation & Dynamic Forests</title>
+<title>Minecraft Terrain - Pure 2D Plains & 3D Mountains</title>
 
 <style>
 body{ margin:0; overflow:hidden; background:#8bb8e8; user-select: none; } 
@@ -50,15 +50,27 @@ body{ margin:0; overflow:hidden; background:#8bb8e8; user-select: none; }
 import * as THREE from "three";
 import { PointerLockControls } from "three/addons/controls/PointerLockControls.js";
 import { GUI } from "three/addons/libs/lil-gui.module.min.js";
-import { createNoise2D } from "https://cdn.jsdelivr.net/npm/simplex-noise@4.0.1/dist/esm/simplex-noise.js";
+import { createNoise2D, createNoise3D } from "https://cdn.jsdelivr.net/npm/simplex-noise@4.0.1/dist/esm/simplex-noise.js";
 
 // --- MATH & NOISE UTILS ---
 const noise2D = createNoise2D();
+const noise3D = createNoise3D(); 
 
 function fbm2D(x, z, octaves, lacunarity, gain) {
     let amplitude = 1, frequency = 1, sum = 0, norm = 0;
     for (let i = 0; i < octaves; i++) {
         sum += noise2D(x * frequency, z * frequency) * amplitude;
+        norm += amplitude;
+        amplitude *= gain;
+        frequency *= lacunarity;
+    }
+    return sum / norm;
+}
+
+function fbm3D(x, y, z, octaves, lacunarity, gain) {
+    let amplitude = 1, frequency = 1, sum = 0, norm = 0;
+    for (let i = 0; i < octaves; i++) {
+        sum += noise3D(x * frequency, y * frequency, z * frequency) * amplitude;
         norm += amplitude;
         amplitude *= gain;
         frequency *= lacunarity;
@@ -133,8 +145,11 @@ controls.addEventListener("unlock", () => info.style.display="block");
 scene.add(controls.getObject());
 
 // --- LIGHTING ---
-const hemiLight = new THREE.HemisphereLight(0xffffff, 0x666677, 0.85); 
+const hemiLight = new THREE.HemisphereLight(0xffffff, 0x888899, 1.2); 
 scene.add(hemiLight);
+
+const ambientLight = new THREE.AmbientLight(0x555566, 1.0);
+scene.add(ambientLight);
 
 const sunOffset = new THREE.Vector3(120, 150, -90);
 const sunLight = new THREE.DirectionalLight(0xfff3e0, 2.9);
@@ -277,15 +292,15 @@ scene.add(water);
 // --- TEXTURES & MATERIALS ---
 const loader = new THREE.TextureLoader();
 const texturePaths = [
-    'textures/top.jpg',                  // 0
-    'textures/bottom.jpg',               // 1
-    'textures/side.jpg',                 // 2
-    'textures/stone.jpg',                // 3
-    'textures/bedrock.jpg',              // 4
-    'textures/leaves.png',               // 5 
-    'textures/wood_log_bottom_top.webp', // 6
-    'textures/wood_log.jpg',             // 7
-    'textures/sand.png'                  // 8 
+    'textures/top.jpg',                  
+    'textures/bottom.jpg',               
+    'textures/side.jpg',                 
+    'textures/stone.jpg',                
+    'textures/bedrock.jpg',              
+    'textures/leaves.png',               
+    'textures/wood_log_bottom_top.webp', 
+    'textures/wood_log.jpg',             
+    'textures/sand.png'                  
 ];
 
 const maxAniso = renderer.capabilities.getMaxAnisotropy();
@@ -324,12 +339,11 @@ const multiMaterial = textures.map((tex, i) => {
         map: tex, 
         vertexColors: true,
         transparent: isLeaves, 
-        alphaTest: isLeaves ? 0.1 : 0, 
+        alphaTest: isLeaves ? 0.45 : 0, 
         side: isLeaves ? THREE.DoubleSide : THREE.FrontSide
     });
 });
 
-// PUSH CUSTOM MATERIAL FOR VOLUMETRIC POND WATER (Index 9)
 multiMaterial.push(new THREE.MeshLambertMaterial({
     color: 0xffffff,
     vertexColors: true,
@@ -366,28 +380,26 @@ advancedFolder.add(params, 'cullingLevel').name('CULLING LEVEL').onChange(v => {
 });
 advancedFolder.add(params, 'engineFreeze').name('ENGINE FREEZE');
 
-// --- TERRAIN GENERATION ---
+// --- TERRAIN GENERATION (STRICT 2D/3D BIOME SPLIT) ---
 const CHUNK_SIZE = 16;
-const PAD = 2; 
+const PAD = 3; 
 const TOTAL_SIZE = CHUNK_SIZE + PAD * 2; 
 
 const activeChunks = new Map();
 const pendingChunks = new Set();
 let chunkQueue = [];
 
-// Block IDs mapping
 const B_AIR = 0, B_BEDROCK = 1, B_STONE = 2, B_DIRT = 3, B_GRASS = 4, B_SAND = 5, B_LOG = 6, B_LEAVES = 7, B_WATER = 8;
-const SNOW_LINE = SEA_LEVEL + 75;
+const SNOW_LINE = SEA_LEVEL + 50; 
 
 function terrainInfo(x, z) {
     const continent = fbm2D(x / 1400 + 1500, z / 1400 + 1500, 4, 2.0, 0.5); 
     const erosion   = fbm2D(x / 800 - 4000, z / 800 - 4000, 4, 2.0, 0.5); 
     
-    // Large Desert biomes
     const tempNoise = fbm2D(x / 1500 + 8000, z / 1500 + 8000, 3, 2.0, 0.5); 
     const isDesert = tempNoise > 0.48;
 
-    const elevation = continent * 50 + 18; 
+    const elevation = continent * 30 + 15; 
     let ruggedness = (continent * 0.7 - erosion * 0.5 + 1.1) / 2; 
     ruggedness = THREE.MathUtils.clamp(ruggedness, 0, 1);
 
@@ -395,14 +407,14 @@ function terrainInfo(x, z) {
     const plainsWeight   = 1 - smoothstep(0.1, 0.4, ruggedness);
     const hillsWeight    = Math.max(0, 1 - plainsWeight - mountainWeight);
 
-    const base    = fbm2D(x / 300, z / 300, 4, 2.0, 0.5);       
-    const detail  = fbm2D(x / 50, z / 50, 2, 2.0, 0.5);          
+    const base   = fbm2D(x / 300, z / 300, 4, 2.0, 0.5);       
+    const detail = fbm2D(x / 50, z / 50, 2, 2.0, 0.5);          
     const rolling = fbm2D(x / 150, z / 150, 3, 2.0, 0.5);          
     const ridge   = ridgedNoise(x / 450, z / 450, 4, 2.0, 0.4); 
 
-    const plainsRelief   = base * 5.0 + detail * 1.5;
-    const hillsRelief    = base * 14.0 + rolling * 22.0 + detail * 2.0;
-    const mountainRelief = base * 70.0 + ridge * 60.0 + rolling * 15.0; 
+    const plainsRelief   = base * 3.0 + detail * 1.0;
+    const hillsRelief    = base * 10.0 + rolling * 15.0 + detail * 2.0;
+    const mountainRelief = base * 40.0 + ridge * 40.0 + rolling * 10.0; 
 
     const relief = plainsRelief * plainsWeight + hillsRelief * hillsWeight + mountainRelief * mountainWeight;
     const hRaw = SEA_LEVEL + elevation + relief;
@@ -411,7 +423,6 @@ function terrainInfo(x, z) {
     const rocky = mountainWeight > 0.5 || (mountainWeight > 0.3 && ridge > 0.6);
     const snowy = h > SNOW_LINE;
 
-    // PLAINS POND LOGIC (Now more frequent)
     const pondNoise = fbm2D(x / 50 + 5000, z / 50 + 5000, 2, 2.0, 0.5); 
     let isPond = false;
     let pondDepth = 0;
@@ -420,27 +431,26 @@ function terrainInfo(x, z) {
         pondDepth = Math.floor((pondNoise - 0.45) * 15) + 1; 
     }
 
-    // PLAINS PATCHES (Stone and Sand common in plains)
     const patchNoise = fbm2D(x / 80 + 1000, z / 80 + 1000, 3, 2.0, 0.5);
-    let patchType = 0; // 0 = Normal, 1 = Stone, 2 = Sand
+    let patchType = 0; 
     if (plainsWeight > 0.5 && !rocky && !snowy && !isDesert && !isPond) {
-        if (patchNoise > 0.65) patchType = 1; // Rocky outcroppings
-        else if (patchNoise < 0.35) patchType = 2; // Small desert pockets
+        if (patchNoise > 0.65) patchType = 1; 
+        else if (patchNoise < 0.35) patchType = 2; 
     }
 
-    // TREE DENSITY (Variable thickness across plains/hills)
     const treeDensityNoise = fbm2D(x / 250 + 3000, z / 250 + 3000, 2, 2.0, 0.5);
     let treeProb = 0.999; 
-    if (treeDensityNoise > 0.6) treeProb = 0.94; // Very high (dense forest)
-    else if (treeDensityNoise > 0.4) treeProb = 0.985; // Middle (lightly dotted)
-    else treeProb = 0.998; // Very low (sparse plains)
+    if (treeDensityNoise > 0.6) treeProb = 0.94; 
+    else if (treeDensityNoise > 0.4) treeProb = 0.985; 
+    else treeProb = 0.998; 
 
-    return { height: h, rocky, snowy, isDesert, isPond, pondDepth, patchType, treeProb };
+    // Return mountain weight so we can isolate 3D noise solely to mountains
+    return { height: h, rocky, snowy, isDesert, isPond, pondDepth, patchType, treeProb, mountainWeight };
 }
 
 const faceTints = [
-    [1.0, 1.0, 1.0], [0.65, 0.65, 0.65], [0.8, 0.8, 0.8], 
-    [0.8, 0.8, 0.8], [0.75, 0.75, 0.75], [0.75, 0.75, 0.75] 
+    [1.0, 1.0, 1.0], [0.5, 0.5, 0.5], [0.8, 0.8, 0.8], 
+    [0.8, 0.8, 0.8], [0.8, 0.8, 0.8], [0.8, 0.8, 0.8] 
 ];
 
 const voxelFaces = [
@@ -466,15 +476,12 @@ function getMaterialIndex(b, faceIdx) {
     return 3;
 }
 
-function shouldShowFace(currentMat, adjacentMat) {
+function shouldShowFace(currentMat, adjacentMat, faceIdx, x, y, z) {
     if (adjacentMat === B_AIR) return true; 
-    if (currentMat === B_LEAVES && adjacentMat === B_LEAVES) return false; 
-    
-    // Culling rules for volumetric water rendering
+    if (currentMat === B_LEAVES && adjacentMat === B_LEAVES) return hash(x, y * 31 + z) > 0.75; 
     if (currentMat === B_WATER && adjacentMat === B_WATER) return false; 
     if (currentMat === B_WATER && adjacentMat !== B_AIR) return false; 
     if (adjacentMat === B_WATER) return true; 
-    
     if (adjacentMat === B_LEAVES) return true; 
     return false; 
 }
@@ -485,6 +492,7 @@ function generateChunk(cx, cz) {
 
     let chunkMaxY = 0;
     const hMap = new Int16Array(TOTAL_SIZE * TOTAL_SIZE);
+    const mWeightMap = new Float32Array(TOTAL_SIZE * TOTAL_SIZE);
     const rockyMap = new Uint8Array(TOTAL_SIZE * TOTAL_SIZE);
     const snowyMap = new Uint8Array(TOTAL_SIZE * TOTAL_SIZE);
     const desertMap = new Uint8Array(TOTAL_SIZE * TOTAL_SIZE);
@@ -501,6 +509,7 @@ function generateChunk(cx, cz) {
             const idx = lx * TOTAL_SIZE + lz;
             
             hMap[idx] = info.height;
+            mWeightMap[idx] = info.mountainWeight; // Save for 3D generation decision
             rockyMap[idx] = info.rocky ? 1 : 0;
             snowyMap[idx] = info.snowy ? 1 : 0;
             desertMap[idx] = info.isDesert ? 1 : 0;
@@ -508,99 +517,207 @@ function generateChunk(cx, cz) {
             pondDepthMap[idx] = info.pondDepth;
             patchMap[idx] = info.patchType;
             
-            // Block trees from spawning inside water, stone, or sand patches
             const isTree = (info.height > SEA_LEVEL + 2 && !info.rocky && !info.snowy && !info.isDesert && !info.isPond && info.patchType === 0 && hash(gx, gz) > info.treeProb);
             treeMap[idx] = isTree ? 1 : 0;
 
-            if (info.height > chunkMaxY) chunkMaxY = info.height;
+            // Compute maximum possible height including 3D noise influence
+            const colMaxY = info.height + Math.ceil(info.mountainWeight * 35);
+            if (colMaxY > chunkMaxY) chunkMaxY = colMaxY;
         }
     }
     
-    const volumeHeight = chunkMaxY + 8; 
+    const volumeHeight = chunkMaxY + 12; // Buffer for trees
     const volume = new Uint8Array(TOTAL_SIZE * volumeHeight * TOTAL_SIZE);
     
     function vIdx(x, y, z) {
         return x + z * TOTAL_SIZE + y * TOTAL_SIZE * TOTAL_SIZE;
     }
 
+    // Pass 1: Build the Terrain Structure (100% Solid below ground, zero underground caves)
     for (let lx = 0; lx < TOTAL_SIZE; lx++) {
         for (let lz = 0; lz < TOTAL_SIZE; lz++) {
             const idx2D = lx * TOTAL_SIZE + lz;
-            const h = hMap[idx2D];
+            const baseH = hMap[idx2D];
+            const mWeight = mWeightMap[idx2D];
+            const gx = startX + lx - PAD;
+            const gz = startZ + lz - PAD;
+            
+            if (mWeight < 0.05) {
+                // EXTREMELY FAST 2D PLAINS BIOME: No 3D noise at all.
+                for (let y = 0; y <= baseH; y++) {
+                    volume[vIdx(lx, y, lz)] = (y === 0) ? B_BEDROCK : B_STONE;
+                }
+            } else {
+                // HYBRID 3D MOUNTAIN BIOME: Solid ground underneath, 3D overhangs above.
+                let localMax = baseH + Math.ceil(mWeight * 35);
+                for (let y = 0; y <= localMax; y++) {
+                    if (y === 0) { 
+                        volume[vIdx(lx, y, lz)] = B_BEDROCK; 
+                        continue; 
+                    }
+                    // Everything deeply below base ground is guaranteed solid. No caves!
+                    if (y < baseH - 10) { 
+                        volume[vIdx(lx, y, lz)] = B_STONE; 
+                        continue; 
+                    }
+                    
+                    let density = baseH - y;
+                    let shape3D = fbm3D(gx/50, y/50, gz/50, 3, 2.0, 0.5) * 45.0;
+                    
+                    // Anti-Gravity Penalty: Heavily punish noise far above base ground to kill floating islands
+                    let floatingPenalty = Math.max(0, y - baseH) * 0.8;
+                    
+                    density += (shape3D * mWeight) - floatingPenalty;
+                    
+                    if (density > 0) volume[vIdx(lx, y, lz)] = B_STONE;
+                }
+            }
+        }
+    }
+
+    // Pass 2: Apply Surface Biomes blocks & Map Water Features
+    const treePositions = [];
+    
+    for (let lx = 0; lx < TOTAL_SIZE; lx++) {
+        for (let lz = 0; lz < TOTAL_SIZE; lz++) {
+            const idx2D = lx * TOTAL_SIZE + lz;
             const rocky = rockyMap[idx2D] === 1;
             const isDesert = desertMap[idx2D] === 1;
             const isPond = pondMap[idx2D] === 1;
             const pondDepth = pondDepthMap[idx2D];
             const patchType = patchMap[idx2D];
+            const baseH = hMap[idx2D];
             
-            const terrainH = isPond ? Math.max(1, h - pondDepth) : h;
-            
-            const isBeach = (!rocky && !isDesert && !isPond && terrainH >= SEA_LEVEL - 1 && terrainH <= SEA_LEVEL + 2);
-            
-            for (let y = 0; y <= h; y++) {
-                let block = B_STONE;
-                if (y === 0) {
-                    block = B_BEDROCK;
-                } else if (isPond && y > terrainH && y <= h) {
-                    block = B_WATER;
-                } else {
-                    if (isDesert || patchType === 2) {
-                        if (y >= terrainH - 4) block = B_SAND;
-                        else block = B_STONE;
-                    } else if (patchType === 1) {
-                        block = B_STONE; // Exposed rocky outcroppings in plains
-                    } else if (isBeach) {
-                        if (y >= terrainH - 3) block = B_SAND;
-                        else block = B_STONE;
-                    } else if (!rocky) {
-                        if (y === terrainH) block = isPond ? B_DIRT : B_GRASS;
-                        else if (y > terrainH - 3) block = B_DIRT;
-                    }
-                }
+            let highestGrass = -1;
+            let isExposedToSky = true;
 
-                if (y < volumeHeight) {
-                    volume[vIdx(lx, y, lz)] = block;
+            for (let y = volumeHeight - 1; y >= 1; y--) {
+                const current = volume[vIdx(lx, y, lz)];
+                
+                if (current === B_STONE) {
+                    if (isExposedToSky) {
+                        const isBeach = (!rocky && !isDesert && !isPond && y >= SEA_LEVEL - 1 && y <= SEA_LEVEL + 2);
+                        
+                        if (isDesert || patchType === 2 || isBeach) {
+                            volume[vIdx(lx, y, lz)] = B_SAND;
+                            for(let d=1; d<=3 && y-d>0; d++) {
+                                if(volume[vIdx(lx, y-d, lz)] === B_STONE) volume[vIdx(lx, y-d, lz)] = B_SAND;
+                            }
+                        } else if (patchType === 1) {
+                            // Leave as stone for rocky plains patches
+                        } else {
+                            const blockType = (isPond && y <= baseH) ? B_DIRT : B_GRASS;
+                            volume[vIdx(lx, y, lz)] = blockType;
+                            if (blockType === B_GRASS) highestGrass = y;
+                            
+                            for(let d=1; d<=3 && y-d>0; d++) {
+                                if(volume[vIdx(lx, y-d, lz)] === B_STONE) volume[vIdx(lx, y-d, lz)] = B_DIRT;
+                            }
+                        }
+                        isExposedToSky = false; 
+                    }
                 }
             }
 
-            if (treeMap[idx2D] === 1) {
-                for (let dy = 1; dy <= 4; dy++) volume[vIdx(lx, h + dy, lz)] = B_LOG;
-                
-                for (let dx = -2; dx <= 2; dx++) {
-                    for (let dz = -2; dz <= 2; dz++) {
-                        const nx = lx + dx, nz = lz + dz;
-                        if (nx >= 0 && nx < TOTAL_SIZE && nz >= 0 && nz < TOTAL_SIZE) {
-                            for (let dy = 3; dy <= 6; dy++) {
-                                if (dy === 3 || dy === 4) {
-                                    if (Math.abs(dx) === 2 && Math.abs(dz) === 2 && hash(startX+nx, startZ+nz+dy) > 0.5) continue;
-                                    if (dx === 0 && dz === 0) continue;
-                                    volume[vIdx(nx, h + dy, nz)] = B_LEAVES;
-                                } else if (dy === 5 && Math.abs(dx) <= 1 && Math.abs(dz) <= 1) {
-                                    volume[vIdx(nx, h + dy, nz)] = B_LEAVES;
-                                } else if (dy === 6 && ((Math.abs(dx)<=1 && Math.abs(dz)<=1 && Math.abs(dx)!==Math.abs(dz)) || (dx===0&&dz===0))) {
+            // Fill Global Ocean Water
+            for (let y = 1; y <= SEA_LEVEL; y++) {
+                if (volume[vIdx(lx, y, lz)] === B_AIR) volume[vIdx(lx, y, lz)] = B_WATER;
+            }
+            
+            // Fill Local Ponds
+            if (isPond) {
+                for (let y = baseH - pondDepth; y <= baseH; y++) {
+                     if (y > 0 && y < volumeHeight && volume[vIdx(lx, y, lz)] === B_AIR) {
+                         volume[vIdx(lx, y, lz)] = B_WATER;
+                     }
+                }
+            }
+            
+            if (treeMap[idx2D] === 1 && highestGrass > 0) {
+                treePositions.push({lx, lz, h: highestGrass});
+            }
+        }
+    }
+
+    // Pass 3: Dynamically structure 2 Tree Variants
+    treePositions.forEach(({lx, lz, h}) => {
+        const gx = startX + lx - PAD;
+        const gz = startZ + lz - PAD;
+        
+        // Hash for two tree types
+        const isLargeOak = hash(gx + 50, gz + 50) > 0.8;
+
+        if (isLargeOak) {
+            const trunkHeight = 5 + Math.floor(hash(gx, gz) * 3);
+            for (let dy = 1; dy <= trunkHeight; dy++) {
+                if (h + dy < volumeHeight) volume[vIdx(lx, h + dy, lz)] = B_LOG;
+            }
+            // Balloon-style spherical leaves for Large Oaks
+            for (let dx = -3; dx <= 3; dx++) {
+                for (let dz = -3; dz <= 3; dz++) {
+                    const nx = lx + dx, nz = lz + dz;
+                    if (nx >= 0 && nx < TOTAL_SIZE && nz >= 0 && nz < TOTAL_SIZE) {
+                        for (let dy = trunkHeight - 2; dy <= trunkHeight + 2; dy++) {
+                            if (h + dy >= volumeHeight) continue;
+                            let distSq = dx*dx + (dy-trunkHeight)*(dy-trunkHeight) + dz*dz;
+                            if (distSq <= 11) { 
+                                if (volume[vIdx(nx, h + dy, nz)] === B_AIR) {
                                     volume[vIdx(nx, h + dy, nz)] = B_LEAVES;
                                 }
                             }
                         }
                     }
                 }
-                
-                for (let dx = -1; dx <= 1; dx++) {
-                    for (let dz = -1; dz <= 1; dz++) {
-                        if (dx !== 0 || dz !== 0) {
-                            const nx = lx + dx, nz = lz + dz;
-                            if (nx >= 0 && nx < TOTAL_SIZE && nz >= 0 && nz < TOTAL_SIZE) {
-                                const gH = hMap[nx * TOTAL_SIZE + nz];
-                                if (hash(startX + nx, startZ + nz) > 0.85) {
-                                    volume[vIdx(nx, gH + 1, nz)] = B_LEAVES;
-                                }
+            }
+        } else {
+            // Standard small oak
+            for (let dy = 1; dy <= 4; dy++) {
+                if (h + dy < volumeHeight) volume[vIdx(lx, h + dy, lz)] = B_LOG;
+            }
+            for (let dx = -2; dx <= 2; dx++) {
+                for (let dz = -2; dz <= 2; dz++) {
+                    const nx = lx + dx, nz = lz + dz;
+                    if (nx >= 0 && nx < TOTAL_SIZE && nz >= 0 && nz < TOTAL_SIZE) {
+                        for (let dy = 3; dy <= 6; dy++) {
+                            if (h + dy >= volumeHeight) continue;
+                            if (dy === 3 || dy === 4) {
+                                if (Math.abs(dx) === 2 && Math.abs(dz) === 2 && hash(gx+dx, gz+dz+dy) > 0.5) continue;
+                                if (dx === 0 && dz === 0) continue;
+                                if (volume[vIdx(nx, h + dy, nz)] === B_AIR) volume[vIdx(nx, h + dy, nz)] = B_LEAVES;
+                            } else if (dy === 5 && Math.abs(dx) <= 1 && Math.abs(dz) <= 1) {
+                                if (volume[vIdx(nx, h + dy, nz)] === B_AIR) volume[vIdx(nx, h + dy, nz)] = B_LEAVES;
+                            } else if (dy === 6 && ((Math.abs(dx)<=1 && Math.abs(dz)<=1 && Math.abs(dx)!==Math.abs(dz)) || (dx===0&&dz===0))) {
+                                if (volume[vIdx(nx, h + dy, nz)] === B_AIR) volume[vIdx(nx, h + dy, nz)] = B_LEAVES;
                             }
                         }
                     }
                 }
             }
         }
-    }
+        
+        // Leaf litters
+        for (let dx = -1; dx <= 1; dx++) {
+            for (let dz = -1; dz <= 1; dz++) {
+                if (dx !== 0 || dz !== 0) {
+                    const nx = lx + dx, nz = lz + dz;
+                    if (nx >= 0 && nx < TOTAL_SIZE && nz >= 0 && nz < TOTAL_SIZE) {
+                        if (hash(gx + dx, gz + dz) > 0.85) {
+                            let groundY = h;
+                            for(let y = volumeHeight - 1; y >= 1; y--) {
+                                if(volume[vIdx(nx, y, nz)] === B_GRASS || volume[vIdx(nx, y, nz)] === B_DIRT) {
+                                    groundY = y;
+                                    break;
+                                }
+                            }
+                            if (groundY + 1 < volumeHeight && volume[vIdx(nx, groundY + 1, nz)] === B_AIR) {
+                                volume[vIdx(nx, groundY + 1, nz)] = B_LEAVES;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    });
 
     const chunkData = Array.from({ length: 10 }, () => ({ pos: [], norm: [], uv: [], color: [], index: [] }));
     
@@ -612,7 +729,7 @@ function generateChunk(cx, cz) {
             const grassVariation = (h % 7) / 7;
 
             const neighborAvg = (hMap[(lx-1)*TOTAL_SIZE+lz] + hMap[(lx+1)*TOTAL_SIZE+lz] + hMap[lx*TOTAL_SIZE+(lz+1)] + hMap[lx*TOTAL_SIZE+(lz-1)]) / 4;
-            const baseAoFactor = THREE.MathUtils.clamp(1 - Math.max(0, neighborAvg - h) * 0.08, 0.6, 1.0);
+            const baseAoFactor = THREE.MathUtils.clamp(1 - Math.max(0, neighborAvg - h) * 0.05, 0.8, 1.0);
 
             for (let y = 0; y < volumeHeight; y++) {
                 const bType = volume[vIdx(lx, y, lz)];
@@ -626,7 +743,7 @@ function generateChunk(cx, cz) {
                         adjType = volume[vIdx(lx + dir[0], adjY, lz + dir[2])];
                     }
 
-                    if (shouldShowFace(bType, adjType)) {
+                    if (shouldShowFace(bType, adjType, fIdx, lx, y, lz)) {
                         const matIdx = getMaterialIndex(bType, fIdx);
                         const data = chunkData[matIdx];
                         const f = voxelFaces[fIdx];
@@ -638,8 +755,8 @@ function generateChunk(cx, cz) {
                         if (isTop) {
                             tint[0] *= aoFactor; tint[1] *= aoFactor; tint[2] *= aoFactor;
                         } else {
-                            const sideGradient = 1.0 - (Math.max(0, h - y) * 0.02);
-                            const gradClamp = THREE.MathUtils.clamp(sideGradient, 0.65, 1.0);
+                            const sideGradient = 1.0 - (Math.max(0, h - y) * 0.015);
+                            const gradClamp = THREE.MathUtils.clamp(sideGradient, 0.85, 1.0);
                             tint[0] *= gradClamp; tint[1] *= gradClamp; tint[2] *= gradClamp;
                         }
 
@@ -719,7 +836,6 @@ function reloadWorld() {
         scene.remove(mesh);
     });
     activeChunks.clear();
-
     chunkQueue.length = 0;
     pendingChunks.clear();
 }
@@ -769,6 +885,66 @@ function processChunkQueue() {
     }
 }
 
+// --- OPTIMIZED COLLISION UTILS ---
+// Immediate exit for spaces above 2D base height saves immense FPS
+function isSolidBlock(x, y, z) {
+    if (y <= 0) return true;
+    const info = terrainInfo(x, z);
+    
+    // FPS FIX: If checking purely in plains, instant math return!
+    if (info.mountainWeight < 0.05) {
+        return y <= info.height;
+    } else {
+        // Mountain check - strict limits to avoid unnecessary noise calls
+        let localMax = info.height + Math.ceil(info.mountainWeight * 35);
+        if (y > localMax) return false;
+        if (y < info.height - 10) return true; 
+        
+        let density = info.height - y;
+        let shape3D = fbm3D(x/50, y/50, z/50, 3, 2.0, 0.5) * 45.0;
+        let floatingPenalty = Math.max(0, y - info.height) * 0.8;
+        
+        return (density + (shape3D * info.mountainWeight) - floatingPenalty) > 0;
+    }
+}
+
+function getFloor(x, y, z) {
+    const r = 0.25;
+    let maxFloor = -Infinity;
+    const points = [
+        [Math.round(x), Math.round(z)], [Math.round(x-r), Math.round(z-r)],
+        [Math.round(x+r), Math.round(z-r)], [Math.round(x-r), Math.round(z+r)],
+        [Math.round(x+r), Math.round(z+r)]
+    ];
+    let startY = Math.floor(y + 0.5); 
+    for(let pt of points) {
+        for(let by = startY; by >= 0; by--) {
+            if (isSolidBlock(pt[0], by, pt[1])) {
+                if (by + 0.5 > maxFloor) maxFloor = by + 0.5;
+                break;
+            }
+        }
+    }
+    return maxFloor;
+}
+
+function isWall(x, y, z) {
+    const r = 0.25;
+    const points = [
+        [Math.round(x), Math.round(z)], [Math.round(x-r), Math.round(z-r)],
+        [Math.round(x+r), Math.round(z-r)], [Math.round(x-r), Math.round(z+r)],
+        [Math.round(x+r), Math.round(z+r)]
+    ];
+    let bodyMin = Math.round(y + 0.5);
+    let bodyMax = Math.round(y + 1.5);
+    for (let pt of points) {
+        for (let by = bodyMin; by <= bodyMax; by++) {
+            if (isSolidBlock(pt[0], by, pt[1])) return true;
+        }
+    }
+    return false;
+}
+
 // --- GAME MODE / MOVEMENT ---
 const EYE_HEIGHT = 1.62;      
 const GRAVITY = 40;
@@ -805,20 +981,34 @@ function toggleGameMode() {
     updateModeDisplay();
 }
 
-const keys={};
-window.addEventListener("keydown",e=>{
+const keys = {};
+let isSprinting = true;
+let lastWTapTime = 0;
+const sprintSpeed = 5.6; 
+
+window.addEventListener("keydown", e => {
     if (e.code === 'F4') { e.preventDefault(); if (!keys[e.code]) toggleGameMode(); keys[e.code] = true; return; }
     if (e.code === 'Space' && gameMode === 'creative' && !keys[e.code]) {
         const now = performance.now();
         if (now - lastSpaceTapTime < DOUBLE_TAP_WINDOW) { isFlying = !isFlying; verticalVelocity = 0; updateModeDisplay(); }
         lastSpaceTapTime = now;
     }
-    keys[e.code]=true;
+    if (e.code === 'KeyW' && !keys[e.code]) {
+        const now = performance.now();
+        if (now - lastWTapTime < 300) { isSprinting = true; } 
+        lastWTapTime = now;
+    }
+    if (e.code === 'ControlLeft') { isSprinting = true; } 
+    keys[e.code] = true;
 });
-window.addEventListener("keyup",e=>{ keys[e.code]=false; });
 
-const flySpeed = 25;
-const walkSpeed = 6;
+window.addEventListener("keyup", e => { 
+    keys[e.code] = false; 
+    if (e.code === 'KeyW') isSprinting = false; 
+});
+
+const flySpeed = 11;
+const walkSpeed = 4.3;
 const clock = new THREE.Clock();
 
 const fpsDiv = document.getElementById("fps");
@@ -838,6 +1028,8 @@ function animate(){
     const moveLen = Math.hypot(moveX, moveZ);
     if (moveLen > 0) { moveX /= moveLen; moveZ /= moveLen; }
 
+    const speedMod = isSprinting ? sprintSpeed : walkSpeed;
+
     if (gameMode === 'spectator') {
         controls.moveRight(moveX * flySpeed * dt);
         controls.moveForward(moveZ * flySpeed * dt);
@@ -851,27 +1043,51 @@ function animate(){
         verticalVelocity = 0;
         grounded = false;
 
-        const groundSurface = terrainInfo(camera.position.x, camera.position.z).height + 0.5;
-        const minEyeY = groundSurface + EYE_HEIGHT;
-        if (camera.position.y < minEyeY) camera.position.y = minEyeY;
+        const currentGround = getFloor(camera.position.x, camera.position.y, camera.position.z);
+        const minEyeY = currentGround + EYE_HEIGHT;
+        if (camera.position.y < minEyeY) {
+            camera.position.y = THREE.MathUtils.lerp(camera.position.y, minEyeY, 15 * dt);
+        }
     } else {
         const prevX = camera.position.x, prevZ = camera.position.z;
-        controls.moveRight(moveX * walkSpeed * dt);
-        controls.moveForward(moveZ * walkSpeed * dt);
+        const currentFeetY = camera.position.y - EYE_HEIGHT;
 
-        const prevGround = terrainInfo(prevX, prevZ).height + 0.5;
-        const newGround = terrainInfo(camera.position.x, camera.position.z).height + 0.5;
-        const stepHeight = newGround - prevGround;
+        const prevGround = getFloor(prevX, currentFeetY, prevZ);
 
-        if (grounded && stepHeight > 0) { camera.position.x = prevX; camera.position.z = prevZ; }
+        // X-AXIS COLLISION
+        controls.moveRight(moveX * speedMod * dt);
+        const intendedX = camera.position.x;
+        let hitX = isWall(intendedX, currentFeetY, prevZ);
+        if (hitX) camera.position.x = prevX;
 
+        // Z-AXIS COLLISION
+        controls.moveForward(moveZ * speedMod * dt);
+        const intendedZ = camera.position.z;
+        let hitZ = isWall(camera.position.x, currentFeetY, intendedZ);
+        if (hitZ) camera.position.z = prevZ;
+
+        // REAL MINECRAFT AUTO-JUMP
+        if (grounded && (hitX || hitZ)) {
+            let groundAtHitX = hitX ? getFloor(intendedX, currentFeetY, prevZ) : prevGround;
+            let groundAtHitZ = hitZ ? getFloor(camera.position.x, currentFeetY, intendedZ) : prevGround;
+            let maxHitGround = Math.max(groundAtHitX, groundAtHitZ);
+            
+            if (maxHitGround - prevGround <= 1.0 && maxHitGround - prevGround > 0) {
+                verticalVelocity = 10; 
+                grounded = false;
+            }
+        }
+
+        // GRAVITY & MANUAL JUMP
         if (keys["Space"]) jump();
         verticalVelocity -= GRAVITY * dt;
         if (verticalVelocity < -MAX_FALL_SPEED) verticalVelocity = -MAX_FALL_SPEED;
         camera.position.y += verticalVelocity * dt;
 
-        const groundSurface = terrainInfo(camera.position.x, camera.position.z).height + 0.5;
-        const minEyeY = groundSurface + EYE_HEIGHT;
+        // FLOOR COLLISION
+        const currentGround = getFloor(camera.position.x, camera.position.y - EYE_HEIGHT, camera.position.z);
+        const minEyeY = currentGround + EYE_HEIGHT;
+
         if (camera.position.y <= minEyeY) {
             camera.position.y = minEyeY;
             verticalVelocity = 0;
@@ -922,7 +1138,7 @@ function animate(){
 
     renderer.render(scene, camera); 
     
-    coordsDiv.textContent = `X: ${Math.floor(camera.position.x)}  Y: ${Math.floor(camera.position.y)}  Z: ${Math.floor(camera.position.z)}`;
+    coordsDiv.textContent = `X: ${Math.floor(camera.position.x)}  Y: ${Math.floor(camera.position.y)}  Z: ${Math.floor(camera.position.z)};`
     
     frameCount++;
     const timeNow = performance.now();
