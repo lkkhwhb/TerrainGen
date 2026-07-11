@@ -11,7 +11,7 @@
 }
 </script>
 
-<title>Minecraft Terrain - Pure 2D Plains & 3D Mountains</title>
+<title>Minecraft Terrain - 2D/3D Hybrid with Day/Night Cycle</title>
 
 <style>
 body{ margin:0; overflow:hidden; background:#8bb8e8; user-select: none; } 
@@ -44,6 +44,14 @@ body{ margin:0; overflow:hidden; background:#8bb8e8; user-select: none; }
     <h1>Click to Start</h1>
     <small><b>WASD</b> Move &middot; <b>Mouse</b> Look<br><b>F4</b> Toggle Creative / Spectator<br><b>Space</b> Jump (Double-tap to fly in Creative)</small>
 </div>
+<div id="cmd-container" style="display:none; position:absolute; bottom:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.4); z-index: 300;">
+    <div style="position:absolute; bottom:15px; left:10px; width:calc(100% - 20px);">
+        <div id="cmd-suggestions" style="color:#aaaaaa; font-family:monospace; font-size:16px; margin-bottom:2px; background:rgba(0,0,0,0.6); display:inline-block; padding:2px 5px;"></div>
+        <div style="display:flex; background:rgba(0,0,0,0.6); padding:4px;">
+            <input type="text" id="cmd-input" style="width:100%; background:transparent; border:none; color:#ffffff; font-family:monospace; font-size:16px; outline:none;" autocomplete="off" spellcheck="false">
+        </div>
+    </div>
+</div>
 
 <script type="module">
 
@@ -54,7 +62,7 @@ import { createNoise2D, createNoise3D } from "https://cdn.jsdelivr.net/npm/simpl
 
 // --- MATH & NOISE UTILS ---
 const noise2D = createNoise2D();
-const noise3D = createNoise3D(); 
+const noise3D = createNoise3D();
 
 function fbm2D(x, z, octaves, lacunarity, gain) {
     let amplitude = 1, frequency = 1, sum = 0, norm = 0;
@@ -140,8 +148,12 @@ info.onclick = () => {
         bgm.play();
     }
 };
+
+let inCommandMode = false;
 controls.addEventListener("lock", () => info.style.display="none");
-controls.addEventListener("unlock", () => info.style.display="block");
+controls.addEventListener("unlock", () => {
+    if (!inCommandMode) info.style.display = "block";
+});
 scene.add(controls.getObject());
 
 // --- LIGHTING ---
@@ -339,7 +351,7 @@ const multiMaterial = textures.map((tex, i) => {
         map: tex, 
         vertexColors: true,
         transparent: isLeaves, 
-        alphaTest: isLeaves ? 0.45 : 0, 
+        alphaTest: isLeaves ? 0.1 : 0, 
         side: isLeaves ? THREE.DoubleSide : THREE.FrontSide
     });
 });
@@ -444,7 +456,6 @@ function terrainInfo(x, z) {
     else if (treeDensityNoise > 0.4) treeProb = 0.985; 
     else treeProb = 0.998; 
 
-    // Return mountain weight so we can isolate 3D noise solely to mountains
     return { height: h, rocky, snowy, isDesert, isPond, pondDepth, patchType, treeProb, mountainWeight };
 }
 
@@ -476,9 +487,9 @@ function getMaterialIndex(b, faceIdx) {
     return 3;
 }
 
-function shouldShowFace(currentMat, adjacentMat, faceIdx, x, y, z) {
+function shouldShowFace(currentMat, adjacentMat) {
     if (adjacentMat === B_AIR) return true; 
-    if (currentMat === B_LEAVES && adjacentMat === B_LEAVES) return hash(x, y * 31 + z) > 0.75; 
+    if (currentMat === B_LEAVES && adjacentMat === B_LEAVES) return false; 
     if (currentMat === B_WATER && adjacentMat === B_WATER) return false; 
     if (currentMat === B_WATER && adjacentMat !== B_AIR) return false; 
     if (adjacentMat === B_WATER) return true; 
@@ -509,7 +520,7 @@ function generateChunk(cx, cz) {
             const idx = lx * TOTAL_SIZE + lz;
             
             hMap[idx] = info.height;
-            mWeightMap[idx] = info.mountainWeight; // Save for 3D generation decision
+            mWeightMap[idx] = info.mountainWeight;
             rockyMap[idx] = info.rocky ? 1 : 0;
             snowyMap[idx] = info.snowy ? 1 : 0;
             desertMap[idx] = info.isDesert ? 1 : 0;
@@ -520,20 +531,19 @@ function generateChunk(cx, cz) {
             const isTree = (info.height > SEA_LEVEL + 2 && !info.rocky && !info.snowy && !info.isDesert && !info.isPond && info.patchType === 0 && hash(gx, gz) > info.treeProb);
             treeMap[idx] = isTree ? 1 : 0;
 
-            // Compute maximum possible height including 3D noise influence
             const colMaxY = info.height + Math.ceil(info.mountainWeight * 35);
             if (colMaxY > chunkMaxY) chunkMaxY = colMaxY;
         }
     }
     
-    const volumeHeight = chunkMaxY + 12; // Buffer for trees
+    const volumeHeight = chunkMaxY + 12; 
     const volume = new Uint8Array(TOTAL_SIZE * volumeHeight * TOTAL_SIZE);
     
     function vIdx(x, y, z) {
         return x + z * TOTAL_SIZE + y * TOTAL_SIZE * TOTAL_SIZE;
     }
 
-    // Pass 1: Build the Terrain Structure (100% Solid below ground, zero underground caves)
+    // Pass 1: Build Terrain Structure (100% Solid below ground, zero underground caves)
     for (let lx = 0; lx < TOTAL_SIZE; lx++) {
         for (let lz = 0; lz < TOTAL_SIZE; lz++) {
             const idx2D = lx * TOTAL_SIZE + lz;
@@ -543,32 +553,26 @@ function generateChunk(cx, cz) {
             const gz = startZ + lz - PAD;
             
             if (mWeight < 0.05) {
-                // EXTREMELY FAST 2D PLAINS BIOME: No 3D noise at all.
+                // PURE 2D PLAINS
                 for (let y = 0; y <= baseH; y++) {
                     volume[vIdx(lx, y, lz)] = (y === 0) ? B_BEDROCK : B_STONE;
                 }
             } else {
-                // HYBRID 3D MOUNTAIN BIOME: Solid ground underneath, 3D overhangs above.
+                // HYBRID 3D MOUNTAINS (Overhangs only)
                 let localMax = baseH + Math.ceil(mWeight * 35);
                 for (let y = 0; y <= localMax; y++) {
                     if (y === 0) { 
                         volume[vIdx(lx, y, lz)] = B_BEDROCK; 
                         continue; 
                     }
-                    // Everything deeply below base ground is guaranteed solid. No caves!
                     if (y < baseH - 10) { 
                         volume[vIdx(lx, y, lz)] = B_STONE; 
                         continue; 
                     }
-                    
                     let density = baseH - y;
                     let shape3D = fbm3D(gx/50, y/50, gz/50, 3, 2.0, 0.5) * 45.0;
-                    
-                    // Anti-Gravity Penalty: Heavily punish noise far above base ground to kill floating islands
                     let floatingPenalty = Math.max(0, y - baseH) * 0.8;
-                    
                     density += (shape3D * mWeight) - floatingPenalty;
-                    
                     if (density > 0) volume[vIdx(lx, y, lz)] = B_STONE;
                 }
             }
@@ -593,18 +597,16 @@ function generateChunk(cx, cz) {
 
             for (let y = volumeHeight - 1; y >= 1; y--) {
                 const current = volume[vIdx(lx, y, lz)];
-                
                 if (current === B_STONE) {
                     if (isExposedToSky) {
                         const isBeach = (!rocky && !isDesert && !isPond && y >= SEA_LEVEL - 1 && y <= SEA_LEVEL + 2);
-                        
                         if (isDesert || patchType === 2 || isBeach) {
                             volume[vIdx(lx, y, lz)] = B_SAND;
                             for(let d=1; d<=3 && y-d>0; d++) {
                                 if(volume[vIdx(lx, y-d, lz)] === B_STONE) volume[vIdx(lx, y-d, lz)] = B_SAND;
                             }
                         } else if (patchType === 1) {
-                            // Leave as stone for rocky plains patches
+                            // Leave as stone
                         } else {
                             const blockType = (isPond && y <= baseH) ? B_DIRT : B_GRASS;
                             volume[vIdx(lx, y, lz)] = blockType;
@@ -619,12 +621,9 @@ function generateChunk(cx, cz) {
                 }
             }
 
-            // Fill Global Ocean Water
             for (let y = 1; y <= SEA_LEVEL; y++) {
                 if (volume[vIdx(lx, y, lz)] === B_AIR) volume[vIdx(lx, y, lz)] = B_WATER;
             }
-            
-            // Fill Local Ponds
             if (isPond) {
                 for (let y = baseH - pondDepth; y <= baseH; y++) {
                      if (y > 0 && y < volumeHeight && volume[vIdx(lx, y, lz)] === B_AIR) {
@@ -632,7 +631,6 @@ function generateChunk(cx, cz) {
                      }
                 }
             }
-            
             if (treeMap[idx2D] === 1 && highestGrass > 0) {
                 treePositions.push({lx, lz, h: highestGrass});
             }
@@ -643,8 +641,6 @@ function generateChunk(cx, cz) {
     treePositions.forEach(({lx, lz, h}) => {
         const gx = startX + lx - PAD;
         const gz = startZ + lz - PAD;
-        
-        // Hash for two tree types
         const isLargeOak = hash(gx + 50, gz + 50) > 0.8;
 
         if (isLargeOak) {
@@ -652,7 +648,6 @@ function generateChunk(cx, cz) {
             for (let dy = 1; dy <= trunkHeight; dy++) {
                 if (h + dy < volumeHeight) volume[vIdx(lx, h + dy, lz)] = B_LOG;
             }
-            // Balloon-style spherical leaves for Large Oaks
             for (let dx = -3; dx <= 3; dx++) {
                 for (let dz = -3; dz <= 3; dz++) {
                     const nx = lx + dx, nz = lz + dz;
@@ -670,7 +665,6 @@ function generateChunk(cx, cz) {
                 }
             }
         } else {
-            // Standard small oak
             for (let dy = 1; dy <= 4; dy++) {
                 if (h + dy < volumeHeight) volume[vIdx(lx, h + dy, lz)] = B_LOG;
             }
@@ -694,8 +688,6 @@ function generateChunk(cx, cz) {
                 }
             }
         }
-        
-        // Leaf litters
         for (let dx = -1; dx <= 1; dx++) {
             for (let dz = -1; dz <= 1; dz++) {
                 if (dx !== 0 || dz !== 0) {
@@ -743,7 +735,7 @@ function generateChunk(cx, cz) {
                         adjType = volume[vIdx(lx + dir[0], adjY, lz + dir[2])];
                     }
 
-                    if (shouldShowFace(bType, adjType, fIdx, lx, y, lz)) {
+                    if (shouldShowFace(bType, adjType)) {
                         const matIdx = getMaterialIndex(bType, fIdx);
                         const data = chunkData[matIdx];
                         const f = voxelFaces[fIdx];
@@ -886,16 +878,13 @@ function processChunkQueue() {
 }
 
 // --- OPTIMIZED COLLISION UTILS ---
-// Immediate exit for spaces above 2D base height saves immense FPS
 function isSolidBlock(x, y, z) {
     if (y <= 0) return true;
     const info = terrainInfo(x, z);
     
-    // FPS FIX: If checking purely in plains, instant math return!
     if (info.mountainWeight < 0.05) {
         return y <= info.height;
     } else {
-        // Mountain check - strict limits to avoid unnecessary noise calls
         let localMax = info.height + Math.ceil(info.mountainWeight * 35);
         if (y > localMax) return false;
         if (y < info.height - 10) return true; 
@@ -909,7 +898,7 @@ function isSolidBlock(x, y, z) {
 }
 
 function getFloor(x, y, z) {
-    const r = 0.25;
+    const r = 0.15;
     let maxFloor = -Infinity;
     const points = [
         [Math.round(x), Math.round(z)], [Math.round(x-r), Math.round(z-r)],
@@ -929,7 +918,7 @@ function getFloor(x, y, z) {
 }
 
 function isWall(x, y, z) {
-    const r = 0.25;
+    const r = 0.15;
     const points = [
         [Math.round(x), Math.round(z)], [Math.round(x-r), Math.round(z-r)],
         [Math.round(x+r), Math.round(z-r)], [Math.round(x-r), Math.round(z+r)],
@@ -945,7 +934,7 @@ function isWall(x, y, z) {
     return false;
 }
 
-// --- GAME MODE / MOVEMENT ---
+// --- GAME MODE / COMMAND SYSTEM ---
 const EYE_HEIGHT = 1.62;      
 const GRAVITY = 40;
 const JUMP_VELOCITY = 10;
@@ -981,24 +970,96 @@ function toggleGameMode() {
     updateModeDisplay();
 }
 
+const cmdContainer = document.getElementById("cmd-container");
+const cmdInput = document.getElementById("cmd-input");
+const cmdSuggestions = document.getElementById("cmd-suggestions");
+let timeOfDay = 6000; 
+
+function updateSuggestions() {
+    const val = cmdInput.value.toLowerCase();
+    if (!val.startsWith("/")) { cmdSuggestions.innerText = ""; return; }
+
+    const parts = val.split(" ");
+    if (parts.length === 1) {
+        if ("/time".startsWith(parts[0])) cmdSuggestions.innerHTML = `<span style="color:#ffffff">${parts[0]}</span>${"/time".slice(parts[0].length)} <span style="color:#55ff55">set</span>`;
+        else cmdSuggestions.innerText = "";
+    } else if (parts.length === 2 && parts[0] === "/time") {
+        if ("set".startsWith(parts[1])) cmdSuggestions.innerHTML = `<span style="color:#55ff55">${parts[1]}</span>${"set".slice(parts[1].length)} <span style="color:#ffaa00">day|noon|night|midnight</span>`;
+        else cmdSuggestions.innerText = "";
+    } else if (parts.length === 3 && parts[0] === "/time" && parts[1] === "set") {
+        const timeOpts = ["day", "noon", "night", "midnight"];
+        const match = timeOpts.find(t => t.startsWith(parts[2]));
+        if (match) cmdSuggestions.innerHTML = `<span style="color:#ffaa00">${parts[2]}</span>${match.slice(parts[2].length)}`;
+        else cmdSuggestions.innerText = "";
+    } else {
+        cmdSuggestions.innerText = "";
+    }
+}
+
+cmdInput.addEventListener("input", updateSuggestions);
+cmdInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+        const val = cmdInput.value.toLowerCase().trim();
+        if (val === "/time set day") timeOfDay = 1000;
+        else if (val === "/time set noon") timeOfDay = 6000;
+        else if (val === "/time set night") timeOfDay = 13000;
+        else if (val === "/time set midnight") timeOfDay = 18000;
+        closeCommand();
+    } else if (e.key === "Escape") {
+        closeCommand();
+    }
+    e.stopPropagation(); 
+});
+
+function closeCommand() {
+    inCommandMode = false;
+    cmdContainer.style.display = "none";
+    cmdInput.value = "";
+    cmdSuggestions.innerText = "";
+    controls.lock();
+}
+
 const keys = {};
-let isSprinting = true;
+let isSprinting = false;
 let lastWTapTime = 0;
-const sprintSpeed = 5.6; 
+const sprintSpeed = 5.6;
+const walkSpeed = 4.3;
 
 window.addEventListener("keydown", e => {
+    if (inCommandMode) {
+        if (e.key === "Escape") closeCommand();
+        e.stopPropagation(); 
+        return; 
+    }
+
+    if (e.key === '/' || e.key === 't' || e.key === 'T') {
+        e.preventDefault();
+        inCommandMode = true;
+        controls.unlock();
+        cmdContainer.style.display = "block";
+        cmdInput.value = e.key === '/' ? '/' : '';
+        
+        setTimeout(() => { 
+            cmdInput.focus(); 
+            updateSuggestions(); 
+        }, 100);
+        return;
+    }
+
     if (e.code === 'F4') { e.preventDefault(); if (!keys[e.code]) toggleGameMode(); keys[e.code] = true; return; }
     if (e.code === 'Space' && gameMode === 'creative' && !keys[e.code]) {
         const now = performance.now();
         if (now - lastSpaceTapTime < DOUBLE_TAP_WINDOW) { isFlying = !isFlying; verticalVelocity = 0; updateModeDisplay(); }
         lastSpaceTapTime = now;
     }
+    
     if (e.code === 'KeyW' && !keys[e.code]) {
         const now = performance.now();
         if (now - lastWTapTime < 300) { isSprinting = true; } 
         lastWTapTime = now;
     }
     if (e.code === 'ControlLeft') { isSprinting = true; } 
+
     keys[e.code] = true;
 });
 
@@ -1008,7 +1069,6 @@ window.addEventListener("keyup", e => {
 });
 
 const flySpeed = 11;
-const walkSpeed = 4.3;
 const clock = new THREE.Clock();
 
 const fpsDiv = document.getElementById("fps");
@@ -1021,14 +1081,14 @@ function animate(){
     const dt = clock.getDelta();
 
     let moveX = 0, moveZ = 0;
-    if (keys["KeyW"]) moveZ += 1;
-    if (keys["KeyS"]) moveZ -= 1;
-    if (keys["KeyA"]) moveX -= 1;
-    if (keys["KeyD"]) moveX += 1;
+    if (!inCommandMode) {
+        if (keys["KeyW"]) moveZ += 1;
+        if (keys["KeyS"]) moveZ -= 1;
+        if (keys["KeyA"]) moveX -= 1;
+        if (keys["KeyD"]) moveX += 1;
+    }
     const moveLen = Math.hypot(moveX, moveZ);
     if (moveLen > 0) { moveX /= moveLen; moveZ /= moveLen; }
-
-    const speedMod = isSprinting ? sprintSpeed : walkSpeed;
 
     if (gameMode === 'spectator') {
         controls.moveRight(moveX * flySpeed * dt);
@@ -1043,48 +1103,56 @@ function animate(){
         verticalVelocity = 0;
         grounded = false;
 
-        const currentGround = getFloor(camera.position.x, camera.position.y, camera.position.z);
-        const minEyeY = currentGround + EYE_HEIGHT;
-        if (camera.position.y < minEyeY) {
-            camera.position.y = THREE.MathUtils.lerp(camera.position.y, minEyeY, 15 * dt);
-        }
+        const groundSurface = terrainInfo(camera.position.x, camera.position.z).height + 0.5;
+        const minEyeY = groundSurface + EYE_HEIGHT;
+        if (camera.position.y < minEyeY) camera.position.y = THREE.MathUtils.lerp(camera.position.y, minEyeY, 15 * dt);
     } else {
         const prevX = camera.position.x, prevZ = camera.position.z;
         const currentFeetY = camera.position.y - EYE_HEIGHT;
 
+        if (!keys["KeyW"]) isSprinting = false;
+        
+        const targetFOV = isSprinting ? 85 : 75;
+        if (Math.abs(camera.fov - targetFOV) > 0.1) {
+            camera.fov = THREE.MathUtils.lerp(camera.fov, targetFOV, 8 * dt);
+            camera.updateProjectionMatrix();
+        }
+
+        const currentSpeed = isSprinting ? sprintSpeed : walkSpeed;
         const prevGround = getFloor(prevX, currentFeetY, prevZ);
 
-        // X-AXIS COLLISION
-        controls.moveRight(moveX * speedMod * dt);
+        // Movement with robust collision checks
+        camera.position.set(prevX, camera.position.y, prevZ); 
+        controls.moveRight(moveX * currentSpeed * dt);
         const intendedX = camera.position.x;
-        let hitX = isWall(intendedX, currentFeetY, prevZ);
-        if (hitX) camera.position.x = prevX;
-
-        // Z-AXIS COLLISION
-        controls.moveForward(moveZ * speedMod * dt);
+        camera.position.set(prevX, camera.position.y, prevZ);
+        controls.moveForward(moveZ * currentSpeed * dt);
         const intendedZ = camera.position.z;
-        let hitZ = isWall(camera.position.x, currentFeetY, intendedZ);
-        if (hitZ) camera.position.z = prevZ;
+        camera.position.set(prevX, camera.position.y, prevZ); 
 
-        // REAL MINECRAFT AUTO-JUMP
+        let hitX = isWall(intendedX, currentFeetY, prevZ);
+        let hitZ = isWall(prevX, currentFeetY, intendedZ);
+
         if (grounded && (hitX || hitZ)) {
             let groundAtHitX = hitX ? getFloor(intendedX, currentFeetY, prevZ) : prevGround;
-            let groundAtHitZ = hitZ ? getFloor(camera.position.x, currentFeetY, intendedZ) : prevGround;
+            let groundAtHitZ = hitZ ? getFloor(prevX, currentFeetY, intendedZ) : prevGround;
             let maxHitGround = Math.max(groundAtHitX, groundAtHitZ);
             
             if (maxHitGround - prevGround <= 1.0 && maxHitGround - prevGround > 0) {
-                verticalVelocity = 10; 
+                verticalVelocity = 10;
                 grounded = false;
+                hitX = false; hitZ = false; 
             }
         }
 
-        // GRAVITY & MANUAL JUMP
+        if (!hitX) camera.position.x = intendedX;
+        if (!hitZ) camera.position.z = intendedZ;
+
         if (keys["Space"]) jump();
         verticalVelocity -= GRAVITY * dt;
         if (verticalVelocity < -MAX_FALL_SPEED) verticalVelocity = -MAX_FALL_SPEED;
         camera.position.y += verticalVelocity * dt;
 
-        // FLOOR COLLISION
         const currentGround = getFloor(camera.position.x, camera.position.y - EYE_HEIGHT, camera.position.z);
         const minEyeY = currentGround + EYE_HEIGHT;
 
@@ -1100,26 +1168,67 @@ function animate(){
     updateTerrain();
     processChunkQueue();
 
-    // WATER ANIMATION
-    waterTex.offset.x -= 0.05 * dt;
-    waterTex.offset.y -= 0.05 * dt;
-
-    // CLOUD ANIMATION
-    cloudTex.offset.x += 0.008 * dt;
-    cloudTex.offset.y += 0.003 * dt;
+    waterTex.offset.x -= 0.05 * dt; waterTex.offset.y -= 0.05 * dt;
+    cloudTex.offset.x += 0.008 * dt; cloudTex.offset.y += 0.003 * dt;
     cloudPlane.position.x = camera.position.x;
     cloudPlane.position.z = camera.position.z;
 
-    const isUnderwater = camera.position.y < (SEA_LEVEL + 0.35);
+    // --- DAY/NIGHT CYCLE LOGIC ---
+    timeOfDay = (timeOfDay + (20 * dt)) % 24000; 
     
+    const timeAngle = (timeOfDay / 24000) * Math.PI * 2;
+    const sunHeight = Math.sin(timeAngle);
+    
+    sunOffset.x = Math.cos(timeAngle) * 400;
+    sunOffset.y = sunHeight * 400;
+    sunOffset.z = 0; 
+    
+    skyUniforms.sunDirection.value.copy(sunOffset).normalize();
+
+    let dayIntensity = Math.max(0, sunHeight);
+    let nightIntensity = Math.max(0, -sunHeight);
+
+    sunLight.intensity = dayIntensity * 2.9;
+    hemiLight.intensity = Math.max(0.4, dayIntensity * 1.2 + nightIntensity * 0.5);
+    
+    scene.children.forEach(c => {
+        if (c.isAmbientLight) c.intensity = Math.max(0.3, dayIntensity * 1.0 + nightIntensity * 0.4);
+    });
+
+    const dayBottom = new THREE.Color(0x8bb8e8);
+    const dayTop = new THREE.Color(0x2863b5);
+    
+    const nightBottom = new THREE.Color(0x1a1a24); 
+    const nightTop = new THREE.Color(0x0a0a10);
+    const sunsetBottom = new THREE.Color(0xfd5e53);
+
+    let currentBottom = new THREE.Color();
+    let currentTop = new THREE.Color();
+    
+    if (sunHeight > 0.15) {
+        currentBottom.copy(dayBottom);
+        currentTop.copy(dayTop);
+    } else if (sunHeight > -0.15) {
+        let t = (sunHeight + 0.15) / 0.30; 
+        let mixColor = new THREE.Color().copy(nightBottom).lerp(sunsetBottom, 1.0 - Math.abs(t - 0.5) * 2);
+        currentBottom.copy(nightBottom).lerp(mixColor, t).lerp(dayBottom, t);
+        currentTop.copy(nightTop).lerp(dayTop, t);
+    } else {
+        currentBottom.copy(nightBottom);
+        currentTop.copy(nightTop);
+    }
+
+    skyUniforms.bottomColor.value.copy(currentBottom);
+    skyUniforms.topColor.value.copy(currentTop);
+
+    const isUnderwater = camera.position.y < (SEA_LEVEL + 0.35);
     if (isUnderwater) {
         scene.fog.color.setHex(0x0f3659);
         scene.background = scene.fog.color;
-        scene.fog.near = 0.1;
-        scene.fog.far = 45; 
+        scene.fog.near = 0.1; scene.fog.far = 45; 
         sky.visible = false; 
     } else {
-        scene.fog.color.setHex(0x8bb8e8);
+        scene.fog.color.copy(currentBottom);
         scene.background = scene.fog.color;
         scene.fog.near = (params.renderDistance * CHUNK_SIZE) - (CHUNK_SIZE * 0.5);
         scene.fog.far = (params.renderDistance * CHUNK_SIZE) + (CHUNK_SIZE * 1.5);
@@ -1127,6 +1236,7 @@ function animate(){
     }
 
     cloudPlane.visible = params.renderClouds && !isUnderwater;
+    cloudPlane.material.opacity = Math.max(0.1, sunHeight * 0.75);
 
     sunLight.position.set(camera.position.x + sunOffset.x, camera.position.y + sunOffset.y, camera.position.z + sunOffset.z);
     sunLight.target.position.copy(camera.position);
@@ -1138,7 +1248,7 @@ function animate(){
 
     renderer.render(scene, camera); 
     
-    coordsDiv.textContent = `X: ${Math.floor(camera.position.x)}  Y: ${Math.floor(camera.position.y)}  Z: ${Math.floor(camera.position.z)};`
+    coordsDiv.textContent = `X: ${Math.floor(camera.position.x)}  Y: ${Math.floor(camera.position.y)}  Z: ${Math.floor(camera.position.z)}`;
     
     frameCount++;
     const timeNow = performance.now();
@@ -1148,7 +1258,6 @@ function animate(){
         lastTime = timeNow;
     }
 }
-
 animate();
 
 window.addEventListener("resize",()=>{
